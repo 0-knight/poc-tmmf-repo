@@ -1,4 +1,10 @@
-.PHONY: build test test-fork deploy-local anvil clean
+.PHONY: install build test test-fork test-vault deploy-local anvil clean
+
+# git apply 는 서브모듈을 인덱스에 등록하지 못합니다. forge install 로 명시적으로 받습니다.
+install:
+	@test -f lib/euler-vault-kit/src/EVault/EVault.sol \
+	  || forge install euler-xyz/euler-vault-kit
+	cd lib/euler-vault-kit && git submodule update --init --recursive --depth 1
 
 build:
 	forge build
@@ -8,6 +14,9 @@ test:
 
 test-fork:
 	forge test --match-path "test/fork/*" -vv
+
+test-vault:
+	forge test --match-path "test/unit/WTGXXCollateralVault.t.sol" -vv
 
 anvil:
 	anvil

@@ -1,7 +1,9 @@
-# Radius PoC — M1
+# Radius PoC — M1 · M2
 
-WTGXX를 담보로 USDC를 대여하는 고정 만기 레포의 개념 검증. M1은 의존성이 없는 독립
-컨트랙트 넷과 목업 스택입니다.
+WTGXX를 담보로 USDC를 대여하는 고정 만기 레포의 개념 검증.
+
+- **M1** 의존성이 없는 독립 컨트랙트 넷과 목업 스택
+- **M2** KYC NFT를 받을 수 있는 담보 볼트
 
 ## 설치
 
@@ -9,9 +11,15 @@ WTGXX를 담보로 USDC를 대여하는 고정 만기 레포의 개념 검증. M
 curl -L https://foundry.paradigm.xyz | bash
 foundryup
 
-forge install
+make install      # EVK + EVK의 중첩 서브모듈
 forge build
 ```
+
+EVK를 의존성으로 씁니다. 두 단계가 필요합니다 — EVK 자체를 받고, EVK의 중첩
+서브모듈(EVC, OpenZeppelin, permit2)을 초기화합니다. `make install`이 둘 다 합니다.
+
+**패치로 받으셨다면 반드시 `make install`을 쓰세요.** `git apply`는 서브모듈을 인덱스에
+등록하지 못하므로 `git submodule update`만으로는 EVK가 받아지지 않습니다.
 
 `solc 0.8.30`을 씁니다. WisdomTree 배포분과 같은 컴파일러(`commit.73712a01`)입니다.
 
@@ -73,6 +81,8 @@ src/
     MaturityRegistry.sol       만기 기록. 강제하지 않음
   gate/
     WTGXXGate.sol              백서 6장 진입 게이트
+  vault/
+    WTGXXCollateralVault.sol   EVault + onERC721Received
   mocks/
     MockERC20.sol              최소 ERC-20 베이스
     MockUSDC.sol               decimals 6
@@ -114,6 +124,20 @@ EVK에는 만기 개념이 없습니다. 부채는 IRM으로 초당 누적되고
 
 이 컨트랙트는 그 사유를 기록만 합니다. PoC에서 실제 청산은 거버넌스가 `setLTV`를 낮춰
 발동시키며, 레지스트리의 기록이 "왜 낮췄는가"의 온체인 증거가 됩니다.
+
+### 담보 볼트가 포크가 아닌 이유
+
+EVault의 모듈 구조를 건드릴 필요가 없습니다. `BeaconProxy`의 `fallback()`이 모든 셀렉터를
+구현으로 delegatecall하고, `EVault`는 Solidity 기본 디스패치를 쓰므로 **상속만으로 함수가
+추가됩니다.** EVK 소스는 한 줄도 고치지 않습니다.
+
+크기는 주의가 필요합니다. EVault 구현이 EVK의 최적화 설정(`optimizer_runs = 20000`)에서
+23,119바이트로 24,576 한계에 근접합니다. 이 프로젝트는 200으로 빌드해 17,889바이트이고
+여유가 6,687바이트입니다. **배포 시 최적화 설정을 바꾸면 크기가 크게 달라집니다.**
+
+`onERC721Received`는 발신자와 tokenId를 검사하지 않습니다. WisdomTree의 `safeMint`가
+tokenId를 인자로 받지 않아 미리 알 수 없고, 발신자를 KYC NFT 주소로 제한하면 비콘
+업그레이드 때 발행이 막히기 때문입니다. NFT 수신 자체는 볼트 회계에 영향이 없습니다.
 
 ### 목업이 재현하는 것
 
@@ -169,6 +193,8 @@ unitOfAccount   USDC
 
 ## 다음 단계
 
-M2는 EVK EVault에 `onERC721Received`를 추가하는 포크입니다. 통과 조건은
-`safeMint(볼트)`가 성공하고, 포크 전 볼트로는 revert하며, EVK 기존 테스트가 전량
-통과하는 것입니다.
+M3은 CREATE2 볼트 팩토리와 HookTarget입니다. 팩토리는 배포 전에 주소를 공개해 참여자가
+독립 검증할 수 있게 하고, HookTarget은 share 전송과 타인 예치를 막습니다. 둘을 막지 않으면
+4626 share가 백서 2.1절이 거부한 래퍼 토큰이 됩니다.
+
+**salt 설계를 M3에서 고정해야 합니다.** 이후 바꾸면 이미 공개한 주소가 무효가 됩니다.
