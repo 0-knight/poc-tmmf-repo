@@ -1,9 +1,10 @@
-# Radius PoC — M1 · M2
+# Radius PoC — M1 · M2 · M3
 
 WTGXX를 담보로 USDC를 대여하는 고정 만기 레포의 개념 검증.
 
 - **M1** 의존성이 없는 독립 컨트랙트 넷과 목업 스택
 - **M2** KYC NFT를 받을 수 있는 담보 볼트
+- **M3** 주소를 사전에 알 수 있는 볼트 팩토리와 훅
 
 ## 설치
 
@@ -83,6 +84,8 @@ src/
     WTGXXGate.sol              백서 6장 진입 게이트
   vault/
     WTGXXCollateralVault.sol   EVault + onERC721Received
+    CollateralVaultFactory.sol CREATE2 배포. implementation immutable
+    CollateralVaultHook.sol    share 전송 차단, 예치를 소유자로 제한
   mocks/
     MockERC20.sol              최소 ERC-20 베이스
     MockUSDC.sol               decimals 6
@@ -226,10 +229,56 @@ unitOfAccount   USDC
 거버넌스        배포자 EOA. 존치
 ```
 
+### 볼트 주소를 예측 가능하게 만든 방법
+
+EVK의 `GenericFactory`는 `new BeaconProxy(...)`를 쓰므로 주소가 팩토리 nonce로 정해집니다.
+배포 순서에 따라 달라져서 **투자자가 자기 이름으로 명부에 오를 컨트랙트를 배포 전에 확인할
+방법이 없습니다.** 백서 2.2절의 "등록에는 투자자 서명이 필요하다"가 형식만 남습니다.
+
+`CollateralVaultFactory`가 `BeaconProxy`를 CREATE2로 직접 배포합니다. `BeaconProxy`는
+생성자에서 `beacon = msg.sender`로 배포자를 비콘으로 삼으므로 **이 팩토리가 비콘을
+겸합니다.** public 변수 `implementation`이 프록시가 찾는 셀렉터(`0x5c60da1b`)를 제공합니다.
+
+```
+salt              keccak256(borrower, asset)
+implementation    immutable. 교체 함수 없음
+oracle            EulerRouter. 어댑터 교체가 주소를 바꾸지 않도록
+```
+
+salt에 자산을 넣는 이유는 확장 때문입니다. 차입자 주소만 쓰면 자산이 늘 때 새 팩토리를
+배포해야 하고, **팩토리 주소가 바뀌면 기존 볼트 주소 계산이 전부 무효**가 됩니다.
+
+대여자는 salt에 넣지 않습니다. 담보 볼트는 자산별로 하나면 되고, 여러 대여자와의 동시
+거래는 EVC 서브계정으로 가릅니다(백서 7.1절). EVC가 계정당 컨트롤러를 하나로 제한하므로
+서브계정이 그 용도입니다. 서브계정은 볼트 share만 보유하고 WTGXX를 직접 만지지 않아
+별도 화이트리스트가 필요 없습니다.
+
+**대가:** `GenericFactory`의 `proxyLookup`과 `isProxy`에서 빠집니다. EVK 코드가 이를
+확인하지 않아(src 전체에 사용처 없음) 담보로 인정받는 데 문제가 없지만, Euler 생태계
+도구가 이 볼트를 찾지 못합니다.
+
+`implementation`을 immutable로 둔 것은 EVK 기본보다 엄격합니다. `GenericFactory`는
+관리자가 `setImplementation`으로 모든 볼트를 한 번에 바꿀 수 있는데, 백서 2.2절의 불변
+볼트 요구와 충돌합니다.
+
+### 훅이 막는 것
+
+담보 볼트가 EVK인 이유는 부채 볼트와 붙기 위해서이고, 그 대가로 ERC-4626이 딸려옵니다.
+그대로 두면 두 조항이 깨집니다.
+
+```
+share 전송   차입자가 비인가 주소에 넘기면 경제적 소유가 명부 밖으로 나감
+             토큰은 볼트에 있어 화이트리스트도 게이트도 감지 못함 (백서 2.1절)
+타인 예치     볼트가 투자자 한 명 전용이 아니게 됨 (백서 2.2절)
+```
+
+**출금은 막지 않습니다.** 백서 6.1절이 출구 무검사를 요구합니다. 부채가 남아 있으면 EVC의
+계정 상태 검사가 막으며, 훅이 판단할 일이 아닙니다.
+
+예치 허용은 `evc.haveCommonOwner`로 판별합니다. `receiver == borrower`로 쓰면 서브계정이
+막혀 다중 대여자 거래가 불가능해집니다.
+
 ## 다음 단계
 
-M3은 CREATE2 볼트 팩토리와 HookTarget입니다. 팩토리는 배포 전에 주소를 공개해 참여자가
-독립 검증할 수 있게 하고, HookTarget은 share 전송과 타인 예치를 막습니다. 둘을 막지 않으면
-4626 share가 백서 2.1절이 거부한 래퍼 토큰이 됩니다.
-
-**salt 설계를 M3에서 고정해야 합니다.** 이후 바꾸면 이미 공개한 주소가 무효가 됩니다.
+M4는 배포 스크립트와 부채 볼트 설정입니다. 고정 IRM, `setLTV`, 부실채권 사회화 끄기를
+일괄 처리하고 환경 변수로 목업과 실물을 전환할 수 있게 만듭니다.
