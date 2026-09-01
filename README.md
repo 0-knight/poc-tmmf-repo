@@ -15,8 +15,8 @@ make install      # EVK + EVK의 중첩 서브모듈
 forge build
 ```
 
-EVK를 의존성으로 씁니다. 두 단계가 필요합니다 — EVK 자체를 받고, EVK의 중첩
-서브모듈(EVC, OpenZeppelin, permit2)을 초기화합니다. `make install`이 둘 다 합니다.
+EVK와 euler-price-oracle을 의존성으로 씁니다. 각각 중첩 서브모듈이 있어 초기화가 필요하며
+`make install`이 전부 처리합니다.
 
 **패치로 받으셨다면 반드시 `make install`을 쓰세요.** `git apply`는 서브모듈을 인덱스에
 등록하지 못하므로 `git submodule update`만으로는 EVK가 받아지지 않습니다.
@@ -129,6 +129,23 @@ LiquidityUtils.sol:113
 
 `FixedOracleWiring.t.sol`이 실제 EVK 볼트 두 개를 배포해 이 오라클을 물리고, 담보
 100e18이 정확히 90e6으로 평가되는 것을 확인합니다.
+
+### 볼트의 오라클 자리에는 라우터를 둡니다
+
+`trailingData`(자산·오라클·unitOfAccount)는 `BeaconProxy` 생성자 인자라 CREATE2 주소에
+들어갑니다. **오라클 주소를 직접 박으면 어댑터를 교체할 때 볼트 주소가 바뀌고**, 참여자가
+명부 등록과 KYC NFT 발행을 처음부터 다시 해야 합니다. NFT는 소울바운드라 회수도 안 됩니다.
+
+그래서 오라클 자리에 `EulerRouter`를 두고 그 뒤에서 어댑터를 교체합니다. 라우터 주소가
+고정되므로 볼트 주소가 유지됩니다. 프로덕션에서 `FixedOneToOneOracle`을 Dataspan
+`shadowNav` 어댑터로 바꾸는 경로가 이것입니다.
+
+`EulerRouter`는 euler-price-oracle의 컨트랙트를 그대로 씁니다(GPL-2.0). 우리가 만들지
+않습니다. `resolvedVaults`가 볼트 share를 기초자산으로 해석해주므로 어댑터는 토큰 쌍만
+알면 됩니다.
+
+**대가:** 어댑터 교체 권한이 거버넌스에 생깁니다. 담보 평가를 통째로 바꾸는 권한이므로
+감시 항목입니다. `EulerRouterWiring.t.sol`이 이 경로 전체를 검증합니다.
 
 PoC 전용입니다. 프로덕션에서는 백서 4.2절이 요구하는 NAV 이탈 감시를 위해 Dataspan
 `shadowNav`를 읽는 어댑터로 교체해야 합니다. 이 오라클은 WTGXX가 1달러에서 이탈해도

@@ -1,1 +1,5 @@
-{}
+{
+  "lib/euler-vault-kit": {
+    "rev": "bfb325a6e6ca09613d940b46f72ccfe017353933"
+  }
+}

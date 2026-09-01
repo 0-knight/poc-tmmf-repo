@@ -4,7 +4,10 @@
 install:
 	@test -f lib/euler-vault-kit/src/EVault/EVault.sol \
 	  || forge install euler-xyz/euler-vault-kit
+	@test -f lib/euler-price-oracle/src/EulerRouter.sol \
+	  || forge install euler-xyz/euler-price-oracle
 	cd lib/euler-vault-kit && git submodule update --init --recursive --depth 1
+	cd lib/euler-price-oracle && git submodule update --init --recursive --depth 1
 
 build:
 	forge build
