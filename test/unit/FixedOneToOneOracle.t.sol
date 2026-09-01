@@ -62,9 +62,18 @@ contract FixedOneToOneOracleTest is Test {
         oracle.getQuote(1e18, OTHER, USDC);
     }
 
-    function test_quote_revertsOnSameAssetPair() public {
-        vm.expectRevert(abi.encodeWithSelector(FixedOneToOneOracle.PairNotSupported.selector, WTGXX, WTGXX));
-        oracle.getQuote(1e18, WTGXX, WTGXX);
+    /// base == quote 는 그대로 통과합니다.
+    /// EVK 부채 볼트가 자기 자산을 unitOfAccount로 조회할 때 이 경로를 씁니다.
+    /// (LiquidityUtils.sol:89 — getQuote(owedAssets, asset, unitOfAccount))
+    function test_quote_sameAssetPassesThrough() public view {
+        assertEq(oracle.getQuote(123e18, WTGXX, WTGXX), 123e18);
+        assertEq(oracle.getQuote(456e6, USDC, USDC), 456e6);
+    }
+
+    /// 등록되지 않은 자산끼리는 여전히 막힙니다.
+    function test_quote_revertsOnUnregisteredSameAsset() public {
+        vm.expectRevert(abi.encodeWithSelector(FixedOneToOneOracle.PairNotSupported.selector, OTHER, USDC));
+        oracle.getQuote(1e18, OTHER, USDC);
     }
 
     function test_constructor_rejectsZeroAddress() public {

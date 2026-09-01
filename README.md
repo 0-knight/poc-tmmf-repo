@@ -107,10 +107,28 @@ WisdomTree가 토큰의 컴플라이언스 주소를 0으로 지우면 `isAddres
 요구합니다. 참여자가 나중에 화이트리스트에서 빠져도 담보를 되찾을 수 있어야 합니다.
 그렇지 않으면 접근 통제가 아니라 수탁이 됩니다.
 
-### 상수 오라클의 보정
+### 상수 오라클의 보정과 볼트 해석
 
 WTGXX는 18 decimals, USDC는 6입니다. 가치는 1대1이지만 그대로 반환하면 10^12배 틀립니다.
 18에서 6 방향은 내림 처리되어 10^12 미만이 0이 되는데, 담보 과소 평가 방향이라 안전합니다.
+
+**EVK는 담보를 토큰이 아니라 볼트 주소로 조회합니다.**
+
+```
+LiquidityUtils.sol:113
+  oracle.getQuote(balance, collateral, unitOfAccount)
+                          ^^^^^^^^^^ 담보 볼트 주소, 수량도 볼트 share
+```
+
+그래서 base가 ERC-4626이면 `convertToAssets`로 기초자산 수량을 구한 뒤 그 자산으로 다시
+해석합니다. EulerRouter의 "resolved vault" 처리와 같습니다. 이 층이 없으면 EVK에 붙자마자
+`PairNotSupported`로 revert합니다.
+
+`base == quote`도 통과시킵니다. 부채 볼트가 자기 자산을 `unitOfAccount`로 조회하는 경로가
+있습니다(`LiquidityUtils.sol:89`).
+
+`FixedOracleWiring.t.sol`이 실제 EVK 볼트 두 개를 배포해 이 오라클을 물리고, 담보
+100e18이 정확히 90e6으로 평가되는 것을 확인합니다.
 
 PoC 전용입니다. 프로덕션에서는 백서 4.2절이 요구하는 NAV 이탈 감시를 위해 Dataspan
 `shadowNav`를 읽는 어댑터로 교체해야 합니다. 이 오라클은 WTGXX가 1달러에서 이탈해도
