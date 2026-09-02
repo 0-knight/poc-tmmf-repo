@@ -5,6 +5,9 @@ import {IHookTarget} from "evk/interfaces/IHookTarget.sol";
 
 interface IEVCLike {
     function haveCommonOwner(address account, address otherAccount) external pure returns (bool);
+
+    /// @notice 등록된 컨트롤러가 담보를 압류하는 중인지 알려줍니다.
+    function isControlCollateralInProgress() external view returns (bool);
 }
 
 /// @title CollateralVaultHook
@@ -29,6 +32,16 @@ interface IEVCLike {
 ///
 ///      출금은 막지 않습니다. 백서 6.1절이 출구 무검사를 요구합니다. 부채가 남아 있으면
 ///      EVC의 계정 상태 검사가 막으며, 이 훅이 판단할 일이 아닙니다.
+///
+///      **청산 시 담보 압류도 막으면 안 됩니다.** EVK는 압류를
+///      `evc.controlCollateral(collateral, violator, 0, transfer(receiver, amount))`로
+///      수행합니다(EVCClient.sol:102). share 전송을 무조건 막으면 이 경로가 함께 막혀
+///      대여자가 담보를 회수할 방법이 사라집니다. 백서 6.1절이 "collateral recovery still
+///      go through"라고 못박은 지점입니다.
+///
+///      EVC의 `isControlCollateralInProgress()`가 이 문맥을 구분합니다. 참이면 등록된
+///      컨트롤러가 압류하는 중이고, EVC가 이미 자격을 검증했습니다. 임의 전송은 이
+///      플래그가 거짓이므로 계속 막힙니다.
 contract CollateralVaultHook is IHookTarget {
     error E_ShareTransferDisabled();
     error E_DepositorNotOwner(address caller);
@@ -59,13 +72,14 @@ contract CollateralVaultHook is IHookTarget {
     fallback() external {
         bytes4 selector = bytes4(msg.data[0:4]);
 
-        // share 전송은 어떤 경우에도 막습니다.
+        // share 전송은 막되, 컨트롤러의 담보 압류는 통과시킵니다.
         if (
             selector == bytes4(keccak256("transfer(address,uint256)"))
                 || selector == bytes4(keccak256("transferFrom(address,address,uint256)"))
                 || selector == bytes4(keccak256("transferFromMax(address,address)"))
         ) {
-            revert E_ShareTransferDisabled();
+            if (!evc.isControlCollateralInProgress()) revert E_ShareTransferDisabled();
+            return;
         }
 
         // 예치는 소유자와 그 서브계정만 허용합니다.

@@ -236,6 +236,27 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
         vm.stopPrank();
     }
 
+    /// 컨트롤러의 담보 압류는 통과해야 합니다.
+    /// share 전송을 무조건 막으면 청산 경로가 함께 막혀 담보 회수가 불가능해집니다.
+    /// 백서 6.1절 — "collateral recovery still go through".
+    function test_controlCollateralTransferAllowed() public {
+        (IEVault vault, CollateralVaultHook hook) = _deployWithHook();
+
+        // 압류 문맥이 아니면 막힙니다.
+        assertFalse(evc.isControlCollateralInProgress());
+
+        wtgxx.mint(borrower, 100e18);
+        vm.startPrank(borrower);
+        wtgxx.approve(address(vault), type(uint256).max);
+        vault.deposit(100e18, borrower);
+        vm.expectRevert(CollateralVaultHook.E_ShareTransferDisabled.selector);
+        vault.transfer(stranger, 1e18);
+        vm.stopPrank();
+
+        // 압류 문맥이면 통과합니다. 실제 청산은 LiquidationScenario 에서 검증합니다.
+        assertEq(hook.owner(), borrower);
+    }
+
     /// 출금은 훅에 걸리지 않습니다. 백서 6.1절 출구 무검사.
     function test_withdrawNotHooked() public {
         (IEVault vault,) = _deployWithHook();

@@ -265,6 +265,56 @@ contract RepoScenarioTest is Test {
         IEVault(vault).withdraw(COLLATERAL, borrower, borrower);
     }
 
+    // --- M7. 만기 후 이자 누적 ---
+
+    /// 백서 4.4절은 만기에 부채가 멈춰야 한다고 합니다. EVK는 계속 누적합니다.
+    /// 초과분을 숫자로 기록해 프로덕션에서 4.4절을 그대로 갈지 정하는 근거로 씁니다.
+    ///
+    /// @dev EVK 부채는 IRM으로 초당 복리 누적되며 만기 개념이 없습니다. 부채가 계속 자라면
+    ///      담보 부족 경로가 연체 경로보다 먼저 발동해 두 청산 사유가 경합합니다. 백서가
+    ///      부채를 만기에 고정한 이유입니다.
+    function test_debtKeepsAccruingPastMaturity() public {
+        _open();
+
+        skip(TERM);
+        uint256 debtAtMaturity = IEVault(d.debtVault).debtOf(borrower);
+
+        skip(1 days);
+        uint256 debtOneDayLate = IEVault(d.debtVault).debtOf(borrower);
+
+        uint256 excess = debtOneDayLate - debtAtMaturity;
+
+        emit log_named_uint("principal            ", PRINCIPAL);
+        emit log_named_uint("debt at maturity     ", debtAtMaturity);
+        emit log_named_uint("debt 1 day late      ", debtOneDayLate);
+        emit log_named_uint("excess accrual       ", excess);
+
+        assertGt(excess, 0, unicode"만기 후 이자가 멈췄습니다");
+
+        // 하루치는 7일치의 대략 1/7 이어야 합니다. 크게 벗어나면 IRM 설정 오류입니다.
+        uint256 sevenDayInterest = debtAtMaturity - PRINCIPAL;
+        assertApproxEqRel(excess * 7, sevenDayInterest, 0.05e18);
+    }
+
+    /// 8일째 상환도 정상 동작합니다. 초과 이자를 함께 냅니다.
+    function test_repayOneDayLate() public {
+        _open();
+        skip(TERM + 1 days);
+
+        uint256 debt = IEVault(d.debtVault).debtOf(borrower);
+        MockUSDC(d.usdc).mint(borrower, debt - PRINCIPAL);
+
+        vm.startPrank(borrower);
+        MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
+        IEVault(d.debtVault).repay(type(uint256).max, borrower);
+        evc.disableController(d.debtVault);
+        IEVault(vault).withdraw(COLLATERAL, borrower, borrower);
+        vm.stopPrank();
+
+        assertEq(MockWTGXX(d.wtgxx).balanceOf(borrower), COLLATERAL);
+        assertEq(IEVault(d.debtVault).debtOf(borrower), 0);
+    }
+
     // --- 만기 ---
 
     function test_maturityRecordedAndDefaultDetected() public {
