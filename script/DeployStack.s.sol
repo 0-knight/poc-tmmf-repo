@@ -29,6 +29,7 @@ import {FixedRateIRM} from "../src/irm/FixedRateIRM.sol";
 import {FixedOneToOneOracle} from "../src/oracle/FixedOneToOneOracle.sol";
 import {MaturityRegistry} from "../src/registry/MaturityRegistry.sol";
 import {WTGXXGate} from "../src/gate/WTGXXGate.sol";
+import {RepoOpener} from "../src/repo/RepoOpener.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 import {MockWTGXX} from "../src/mocks/MockWTGXX.sol";
 import {MockKycNFT} from "../src/mocks/MockKycNFT.sol";
@@ -70,6 +71,7 @@ contract DeployStack is Script {
         address gate;
         address collateralVaultFactory;
         address debtVault;
+        address repoOpener;
         address wtgxx;
         address usdc;
         address kycNft;
@@ -158,6 +160,11 @@ contract DeployStack is Script {
         debtVault.setMaxLiquidationDiscount(MAX_LIQUIDATION_DISCOUNT);
         debtVault.setConfigFlags(CFG_DONT_SOCIALIZE_DEBT); // 백서 4.5절
         debtVault.setFeeReceiver(deployer);
+
+        // 개시 컨트랙트. 게이트 통과와 만기 기록을 강제하는 유일한 경로입니다.
+        // 레지스트리와 순환 의존이라 배포 후 registrar로 지정합니다.
+        d.repoOpener = address(new RepoOpener(d.evc, d.gate, d.maturityRegistry, d.debtVault, d.wtgxx));
+        MaturityRegistry(d.maturityRegistry).setRegistrar(d.repoOpener);
     }
 
     /// @notice 차입자별 담보 볼트를 배포하고 설정합니다.
@@ -193,6 +200,7 @@ contract DeployStack is Script {
         console.log("WTGXXGate              ", d.gate);
         console.log("CollateralVaultFactory ", d.collateralVaultFactory);
         console.log("DebtVault              ", d.debtVault);
+        console.log("RepoOpener             ", d.repoOpener);
         console.log("WTGXX                  ", d.wtgxx);
         console.log("USDC                   ", d.usdc);
     }
@@ -211,5 +219,7 @@ contract DeployStack is Script {
         require(FixedOneToOneOracle(d.priceAdapter).getQuote(1e18, d.wtgxx, d.usdc) == 1e6, "oracle scaling");
         require(FixedRateIRM(d.irm).ratePerSecond() > 0, "irm rate");
         require(CollateralVaultFactory(d.collateralVaultFactory).oracle() == d.router, "factory oracle");
+        require(MaturityRegistry(d.maturityRegistry).registrar() == d.repoOpener, "registrar wiring");
+        require(RepoOpener(d.repoOpener).debtVault() == d.debtVault, "opener debt vault");
     }
 }
