@@ -24,8 +24,15 @@ test-vault:
 anvil:
 	anvil
 
-deploy-local:
+# M1 컨트랙트만. 게이트를 손으로 눌러볼 때 씁니다.
+deploy-gate:
 	forge script script/DeployLocal.s.sol:DeployLocal \
+	  --rpc-url http://127.0.0.1:8545 --broadcast \
+	  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
+# 스택 전체. EVC, 볼트, 라우터, IRM, 팩토리까지.
+deploy-local:
+	forge script script/DeployStack.s.sol:DeployStack \
 	  --rpc-url http://127.0.0.1:8545 --broadcast \
 	  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 

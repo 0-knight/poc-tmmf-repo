@@ -1,10 +1,11 @@
-# Radius PoC — M1 · M2 · M3
+# Radius PoC — M1 ~ M4
 
 WTGXX를 담보로 USDC를 대여하는 고정 만기 레포의 개념 검증.
 
 - **M1** 의존성이 없는 독립 컨트랙트 넷과 목업 스택
 - **M2** KYC NFT를 받을 수 있는 담보 볼트
 - **M3** 주소를 사전에 알 수 있는 볼트 팩토리와 훅
+- **M4** 고정 금리 IRM과 스택 전체 배포 스크립트
 
 ## 설치
 
@@ -46,11 +47,20 @@ forge test --match-path "test/fork/*" -vv
 ## 로컬 배포
 
 ```bash
-anvil                                       # 별도 터미널
-make deploy-local
+anvil                # 별도 터미널
+
+make deploy-local    # 스택 전체 — EVC, 볼트, 라우터, IRM, 팩토리
+make deploy-gate     # M1 컨트랙트만 — 게이트를 손으로 눌러볼 때
 ```
 
-스크립트가 배포 직후 상태를 자체 검증합니다. decimals, 배선, 오라클 보정, 게이트 초기 판정.
+`deploy-local`이 배포 직후 배선을 자체 검증합니다. 부채 볼트 자산·오라클·IRM, 사회화
+플래그, 라우터 어댑터, 오라클 보정, 팩토리 오라클. 하나라도 어긋나면 배포가 실패합니다.
+
+목업과 실물은 환경 변수로 전환합니다. M8에서 Sepolia로 넘어갈 때 같은 스크립트를 씁니다.
+
+```bash
+WTGXX_ADDRESS=0x0b2517eef907389F36fd87Add36E9118d364BD67 make deploy-local
+```
 
 배포 후 게이트를 직접 눌러보려면:
 
@@ -82,6 +92,8 @@ src/
     MaturityRegistry.sol       만기 기록. 강제하지 않음
   gate/
     WTGXXGate.sol              백서 6장 진입 게이트
+  irm/
+    FixedRateIRM.sol           이용률 무관 고정 금리
   vault/
     WTGXXCollateralVault.sol   EVault + onERC721Received
     CollateralVaultFactory.sol CREATE2 배포. implementation immutable
@@ -278,7 +290,36 @@ share 전송   차입자가 비인가 주소에 넘기면 경제적 소유가 �
 예치 허용은 `evc.haveCommonOwner`로 판별합니다. `receiver == borrower`로 쓰면 서브계정이
 막혀 다중 대여자 거래가 불가능해집니다.
 
+### 두 볼트를 다르게 만듭니다
+
+```
+담보 볼트   CollateralVaultFactory (CREATE2)   명부 등록 대상. 주소 예측 필수
+부채 볼트   GenericFactory (EVK 표준)          명부도 KYC NFT도 없음
+```
+
+부채 볼트는 대여자가 주소를 사전 검증할 이유가 없어 표준 팩토리를 그대로 씁니다.
+백서 2.2절이 담보 볼트에만 적용됩니다.
+
+### 금리
+
+`FixedRateIRM`이 이용률과 무관하게 고정 금리를 반환합니다. EVK 기본은 이용률 기반인데
+백서 3.3절이 그 방식을 거부합니다 — 기관은 자금 조달 비용을 미리 알아야 합니다. 대여자가
+한 명이면 이용률이 100%에 붙어 금리가 의미 없이 튀는 문제도 있습니다.
+
+**EVK는 초당 수익률을 복리로 누적합니다.** 설정하는 연 50%는 명목값이고 실효 수익률은
+더 높습니다. 7일 기준 원금의 0.963%가 붙고 단리 계산은 0.958%입니다. 상환액 검증 시
+이 차이를 감안하세요.
+
+**PoC 한정 타협:** 거버너가 금리를 바꿀 수 있습니다. 백서 3.1절은 마켓 파라미터 불변을
+요구하므로, 프로덕션에서는 immutable로 고정하거나 만기별 볼트를 따로 배포해야 합니다.
+
+### 부실채권 사회화
+
+`setConfigFlags(CFG_DONT_SOCIALIZE_DEBT)`로 끕니다. EVK 기본은 켜져 있어 청산 후 남은
+부채를 전체 예금자에게 분산하는데, 백서 4.5절이 이를 명시적으로 거부합니다 — 손실은 그
+차입자와 직접 계약한 대여자에게 귀속됩니다.
+
 ## 다음 단계
 
-M4는 배포 스크립트와 부채 볼트 설정입니다. 고정 IRM, `setLTV`, 부실채권 사회화 끄기를
-일괄 처리하고 환경 변수로 목업과 실물을 전환할 수 있게 만듭니다.
+M5는 S5 정상 종료 시나리오입니다. 목업 WTGXX로 게이트와 만기 레지스트리까지 엮어
+개시부터 상환까지 돌립니다. `DeployStack.t.sol`의 `test_openAndRepay`가 그 골격입니다.
