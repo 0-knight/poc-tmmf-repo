@@ -3,3 +3,7 @@ cache/
 broadcast/
 .env
 docs/
+broadcast/scenario-state.json
+.env.sepolia
+
+*.patch
