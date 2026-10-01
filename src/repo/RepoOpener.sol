@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.0;
 
-import {WTGXXGate} from "../gate/WTGXXGate.sol";
+import {IComplianceGate} from "../interfaces/IComplianceGate.sol";
 import {MaturityRegistry} from "../registry/MaturityRegistry.sol";
 
 /// @dev encodeCall 용 최소 선언. IEVault는 여러 인터페이스를 상속한 합성 타입이라
@@ -64,7 +64,7 @@ contract RepoOpener {
     );
 
     IEVCLike public immutable evc;
-    WTGXXGate public immutable gate;
+    IComplianceGate public immutable gate;
     MaturityRegistry public immutable maturityRegistry;
 
     /// @notice 이 컨트랙트가 호출할 수 있는 유일한 부채 볼트.
@@ -81,7 +81,7 @@ contract RepoOpener {
         ) revert E_ZeroAddress();
 
         evc = IEVCLike(evc_);
-        gate = WTGXXGate(gate_);
+        gate = IComplianceGate(gate_);
         maturityRegistry = MaturityRegistry(maturityRegistry_);
         debtVault = debtVault_;
         collateralAsset = collateralAsset_;
