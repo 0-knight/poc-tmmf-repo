@@ -20,6 +20,10 @@ interface IERC4626Minimal {
 ///      ERC-4626이면 convertToAssets로 기초자산 수량을 구한 뒤 그 자산으로 다시 해석합니다.
 ///      EulerRouter의 "resolved vault" 처리와 같은 방식입니다.
 ///
+///      2026-10-01 관측: Fund Data API의 /funddetails/nav/ 예시가 WTGXX를 1.0002로
+///      보여줍니다. 액면 1 가정이 실제로 깨져 있다는 뜻이며, 아래 교체가 선택이
+///      아니라는 근거입니다.
+///
 ///      PoC 전용입니다. 프로덕션에서는 백서 4.2절이 요구하는 NAV 이탈 감시가 필요하므로
 ///      Dataspan의 shadowNav를 읽는 어댑터로 교체해야 합니다. 이 오라클은 WTGXX가 $1에서
 ///      이탈해도 알아채지 못합니다.
@@ -27,6 +31,8 @@ contract FixedOneToOneOracle is IEulerPriceOracle {
     error PairNotSupported(address base, address quote);
     error ZeroAddress();
     error SameAsset();
+    error DecimalsUnavailable(address asset);
+    error DecimalsOutOfRange(address asset, uint256 decimals);
 
     /// @dev 볼트 중첩 해석 상한. 무한 루프를 막습니다.
     uint256 private constant MAX_RESOLVE_DEPTH = 4;
@@ -38,14 +44,24 @@ contract FixedOneToOneOracle is IEulerPriceOracle {
     uint256 public immutable scaleA;
     uint256 public immutable scaleB;
 
-    constructor(address assetA_, uint8 decimalsA_, address assetB_, uint8 decimalsB_) {
+    constructor(address assetA_, address assetB_) {
         if (assetA_ == address(0) || assetB_ == address(0)) revert ZeroAddress();
         if (assetA_ == assetB_) revert SameAsset();
 
         assetA = assetA_;
         assetB = assetB_;
-        scaleA = 10 ** decimalsA_;
-        scaleB = 10 ** decimalsB_;
+        scaleA = 10 ** _decimalsOf(assetA_);
+        scaleB = 10 ** _decimalsOf(assetB_);
+    }
+
+    /// @dev 자산에서 decimals를 직접 읽습니다. 배포자가 손으로 넣던 값을 없앱니다.
+    ///      틀리면 담보가 조용히 10^12배 잘못 평가되고 아무도 막지 못합니다.
+    ///      못 읽거나 범위를 벗어나면 배포를 세웁니다.
+    function _decimalsOf(address asset) internal view returns (uint256 d) {
+        (bool ok, bytes memory ret) = asset.staticcall(abi.encodeWithSignature("decimals()"));
+        if (!ok || ret.length < 32) revert DecimalsUnavailable(asset);
+        d = abi.decode(ret, (uint256));
+        if (d > 18) revert DecimalsOutOfRange(asset, d);
     }
 
     function name() external pure returns (string memory) {

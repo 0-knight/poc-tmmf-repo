@@ -45,7 +45,7 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
         kyc = new MockKycNFT(issuer);
 
         router = new EulerRouter(address(evc), governor);
-        adapter = new FixedOneToOneOracle(address(wtgxx), 18, address(usdc), 6);
+        adapter = new FixedOneToOneOracle(address(wtgxx), address(usdc));
         vm.prank(governor);
         router.govSetConfig(address(wtgxx), address(usdc), address(adapter));
 

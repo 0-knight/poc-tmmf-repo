@@ -142,7 +142,7 @@ contract DeployStack is Script {
         // --- 가격: 라우터 뒤에 어댑터 ---
         EulerRouter router = new EulerRouter(d.evc, deployer);
         d.router = address(router);
-        d.priceAdapter = address(new FixedOneToOneOracle(d.wtgxx, 18, d.usdc, 6));
+        d.priceAdapter = address(new FixedOneToOneOracle(d.wtgxx, d.usdc));
         router.govSetConfig(d.wtgxx, d.usdc, d.priceAdapter);
 
         // --- Radius 컨트랙트 ---
