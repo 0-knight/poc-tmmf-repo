@@ -3,6 +3,8 @@ pragma solidity ^0.8.0;
 
 import {IHookTarget} from "evk/interfaces/IHookTarget.sol";
 
+import {ParticipantRegistry} from "../registry/ParticipantRegistry.sol";
+
 interface IEVCLike {
     function haveCommonOwner(address account, address otherAccount) external pure returns (bool);
 
@@ -42,20 +44,40 @@ interface IEVCLike {
 ///      EVC의 `isControlCollateralInProgress()`가 이 문맥을 구분합니다. 참이면 등록된
 ///      컨트롤러가 압류하는 중이고, EVC가 이미 자격을 검증했습니다. 임의 전송은 이
 ///      플래그가 거짓이므로 계속 막힙니다.
+///
+///      **압류 수령자도 봅니다(Wave 2).** 전까지는 압류 문맥이면 무조건 통과였습니다.
+///      그런데 EVK 압류는 볼트 share만 옮기고 WTGXX를 만지지 않으므로 이슈어의
+///      화이트리스트가 발동하지 않습니다. 자격 없는 청산인이 share를 받고, 그 다음
+///      `withdraw` 에서 처음 막힙니다 — 그때는 이미 차입자의 부채를 인수해 버린
+///      뒤입니다. 손실이 확정된 다음에 경계를 확인하는 순서였습니다.
+///
+///      그래서 압류가 들어오는 순간 수령자를 `ParticipantRegistry` 로 확인합니다.
+///      자격이 없으면 청산 트랜잭션 전체가 되돌아가고, 청산인은 부채를 떠안지 않습니다.
+///
+///      **압류는 `transfer` 로만 들어옵니다.** EVK의 `enforceCollateralTransfer` 가
+///      `abi.encodeCall(IERC20.transfer, (receiver, amount))` 하나만 씁니다
+///      (EVCClient.sol:102). 그래서 압류 문맥에서도 `transferFrom` 과
+///      `transferFromMax` 는 계속 막습니다 — 통과시킬 이유가 없고, 통과시키면
+///      수령자를 읽는 자리가 셀렉터마다 달라져 경계가 넓어집니다.
 contract CollateralVaultHook is IHookTarget {
     error E_ShareTransferDisabled();
     error E_DepositorNotOwner(address caller);
+    error E_SeizureRecipientNotEligible(address recipient);
     error E_ZeroAddress();
 
     /// @notice 이 볼트를 소유한 투자자. 서브계정은 이 주소에서 파생됩니다.
     address public immutable owner;
 
+    /// @notice 압류 수령자의 자격을 묻는 곳.
+    ParticipantRegistry public immutable registry;
+
     IEVCLike internal immutable evc;
 
-    constructor(address evc_, address owner_) {
-        if (evc_ == address(0) || owner_ == address(0)) revert E_ZeroAddress();
+    constructor(address evc_, address owner_, address registry_) {
+        if (evc_ == address(0) || owner_ == address(0) || registry_ == address(0)) revert E_ZeroAddress();
         evc = IEVCLike(evc_);
         owner = owner_;
+        registry = ParticipantRegistry(registry_);
     }
 
     function isHookTarget() external pure returns (bytes4) {
@@ -72,14 +94,21 @@ contract CollateralVaultHook is IHookTarget {
     fallback() external {
         bytes4 selector = bytes4(msg.data[0:4]);
 
-        // share 전송은 막되, 컨트롤러의 담보 압류는 통과시킵니다.
+        // 압류는 transfer 로만 들어옵니다. 수령자 자격을 확인한 뒤 통과시킵니다.
+        if (selector == bytes4(keccak256("transfer(address,uint256)"))) {
+            if (!evc.isControlCollateralInProgress()) revert E_ShareTransferDisabled();
+
+            address recipient = _firstAddressArg();
+            if (!registry.isEligible(recipient)) revert E_SeizureRecipientNotEligible(recipient);
+            return;
+        }
+
+        // 나머지 전송 계열은 압류 문맥에서도 막습니다. EVK가 쓰지 않는 경로입니다.
         if (
-            selector == bytes4(keccak256("transfer(address,uint256)"))
-                || selector == bytes4(keccak256("transferFrom(address,address,uint256)"))
+            selector == bytes4(keccak256("transferFrom(address,address,uint256)"))
                 || selector == bytes4(keccak256("transferFromMax(address,address)"))
         ) {
-            if (!evc.isControlCollateralInProgress()) revert E_ShareTransferDisabled();
-            return;
+            revert E_ShareTransferDisabled();
         }
 
         // 예치는 소유자와 그 서브계정만 허용합니다.
@@ -97,6 +126,14 @@ contract CollateralVaultHook is IHookTarget {
     function _caller() internal pure returns (address account) {
         assembly {
             account := shr(96, calldataload(sub(calldatasize(), 20)))
+        }
+    }
+
+    /// @dev 원래 calldata의 첫 인자를 주소로 읽습니다. `transfer(address,uint256)` 의
+    ///      수령자 자리입니다. 셀렉터 4바이트 뒤 32바이트 워드의 하위 20바이트입니다.
+    function _firstAddressArg() internal pure returns (address arg) {
+        assembly {
+            arg := and(calldataload(4), 0xffffffffffffffffffffffffffffffffffffffff)
         }
     }
 }

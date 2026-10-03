@@ -223,6 +223,77 @@ contract MaturityRegistryTest is Test {
         assertFalse(registry.isMarketMatured(market));
     }
 
+    // --- 계약의 상대방. 백서 4.5절 ---
+
+    function test_setCounterparty_requiresMaturityFirst() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(MaturityRegistry.NotSet.selector, alice));
+        registry.setCounterparty(alice, bob);
+    }
+
+    function test_setCounterparty_byAccount() public {
+        vm.startPrank(alice);
+        registry.setMaturity(alice, block.timestamp + TERM);
+        registry.setCounterparty(alice, bob);
+        vm.stopPrank();
+
+        assertEq(registry.counterpartyOf(alice), bob);
+    }
+
+    function test_setCounterparty_byRegistrar() public {
+        vm.startPrank(registrar);
+        registry.setMaturity(alice, block.timestamp + TERM);
+        registry.setCounterparty(alice, bob);
+        vm.stopPrank();
+
+        assertEq(registry.counterpartyOf(alice), bob);
+    }
+
+    function test_setCounterparty_rejectsThirdParty() public {
+        vm.prank(alice);
+        registry.setMaturity(alice, block.timestamp + TERM);
+
+        vm.prank(bob);
+        vm.expectRevert(MaturityRegistry.NotAuthorized.selector);
+        registry.setCounterparty(alice, bob);
+    }
+
+    /// 계약 하나에 상대방 하나입니다. 덮어쓰지 않습니다.
+    function test_setCounterparty_rejectsOverwrite() public {
+        vm.startPrank(alice);
+        registry.setMaturity(alice, block.timestamp + TERM);
+        registry.setCounterparty(alice, bob);
+
+        vm.expectRevert(abi.encodeWithSelector(MaturityRegistry.CounterpartyAlreadySet.selector, alice, bob));
+        registry.setCounterparty(alice, market);
+        vm.stopPrank();
+    }
+
+    function test_setCounterparty_rejectsZero() public {
+        vm.startPrank(alice);
+        registry.setMaturity(alice, block.timestamp + TERM);
+
+        vm.expectRevert(MaturityRegistry.ZeroAddress.selector);
+        registry.setCounterparty(alice, address(0));
+        vm.stopPrank();
+    }
+
+    /// 계약이 끝나면 만기와 상대방이 함께 지워집니다. 다음 계약을 열 수 있어야 합니다.
+    function test_clearMaturity_clearsCounterparty() public {
+        vm.startPrank(alice);
+        registry.setMaturity(alice, block.timestamp + TERM);
+        registry.setCounterparty(alice, bob);
+        registry.clearMaturity(alice);
+
+        assertEq(registry.counterpartyOf(alice), address(0));
+
+        registry.setMaturity(alice, block.timestamp + TERM);
+        registry.setCounterparty(alice, market);
+        vm.stopPrank();
+
+        assertEq(registry.counterpartyOf(alice), market);
+    }
+
     function test_constructor_rejectsZeroRegistrar() public {
         vm.expectRevert(MaturityRegistry.ZeroAddress.selector);
         new MaturityRegistry(address(0));

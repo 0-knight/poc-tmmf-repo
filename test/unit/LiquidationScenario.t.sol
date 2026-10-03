@@ -10,6 +10,7 @@ import {DeployStack} from "../../script/DeployStack.s.sol";
 import {RepoOpener} from "../../src/repo/RepoOpener.sol";
 import {LiquidationPrecheck} from "../../src/repo/LiquidationPrecheck.sol";
 import {MaturityRegistry} from "../../src/registry/MaturityRegistry.sol";
+import {MaturityController} from "../../src/repo/MaturityController.sol";
 import {MockWTGXX} from "../../src/mocks/MockWTGXX.sol";
 import {MockUSDC} from "../../src/mocks/MockUSDC.sol";
 import {MockKycNFT} from "../../src/mocks/MockKycNFT.sol";
@@ -26,12 +27,11 @@ interface ILiquidationCall {
 ///
 /// @dev 두 가지를 보여주는 것이 목적입니다.
 ///
-///      **백서 4.4절이 EVK에 없습니다.** 백서는 "담보가 충분해도 만기 미상환은 청산
-///      사유"라고 합니다. EVK의 liquidate는 건전성이 깨져야만 통과하고, WTGXX는 $1
-///      고정에 수익으로 늘기만 해서 만기가 지나도 깨지지 않습니다. PoC에서는 거버넌스가
-///      setLTV를 낮춰 발동시키며, 이는 만기 경과를 담보 부족으로 위장하는 것입니다.
-///      온체인 이벤트에는 "담보 부족"으로 남으므로 만기 레지스트리의 기록이 "왜 낮췄는가"의
-///      근거가 됩니다.
+///      **백서 4.4절은 이제 MaturityController 가 담당합니다.** M6에서는 거버너가 손으로
+///      setLTV 를 낮춰 청산을 열었고, 그래서 성립하는 문장이 "만기가 지나면 청산된다"가
+///      아니라 "거버너가 마음먹으면 청산된다"였습니다. Wave 1에서 그 자리를 컨트랙트가
+///      대신합니다 — 만기 후에만, 누구나, 되돌릴 수 없게. 사다리와 할인의 성질은
+///      MaturityController.t.sol 이 봅니다. 이 파일은 청산 **기계**에 집중합니다.
 ///
 ///      **청산 성공이 담보 확보가 아닙니다.** EVK 청산은 볼트 share를 이전할 뿐 WTGXX를
 ///      만지지 않아 화이트리스트도 동결도 타지 않습니다. 실제 토큰은 그다음 인출에서
@@ -40,6 +40,7 @@ contract LiquidationScenarioTest is Test {
     DeployStack internal deployScript;
     DeployStack.Deployment internal d;
     RepoOpener internal opener;
+    MaturityController internal controller;
     LiquidationPrecheck internal precheck;
     EthereumVaultConnector internal evc;
 
@@ -54,7 +55,6 @@ contract LiquidationScenarioTest is Test {
 
     uint16 internal constant LTV_BORROW = 0.92e4;
     uint16 internal constant LTV_LIQUIDATION = 0.95e4;
-    uint16 internal constant LTV_ON_DEFAULT = 0.7e4;
 
     function setUp() public {
         deployScript = new DeployStack();
@@ -63,7 +63,14 @@ contract LiquidationScenarioTest is Test {
 
         evc = EthereumVaultConnector(payable(d.evc));
         opener = RepoOpener(d.repoOpener);
+        controller = MaturityController(d.maturityController);
         precheck = new LiquidationPrecheck(d.wtgxx);
+
+        // Wave 2부터 부채 볼트 입금에 자격 검사가 붙습니다. 화이트리스트를 먼저 깔아야
+        // 대여자가 자금을 넣을 수 있습니다 — 순서가 뒤바뀌면 setUp 이 되돌아갑니다.
+        MockKycNFT(d.kycNft).safeMint(vault);
+        MockKycNFT(d.kycNft).safeMint(borrower);
+        MockKycNFT(d.kycNft).safeMint(lender);
 
         // 대여자가 청산인이 되므로 대여 자산을 여유 있게 갖고 있어야 합니다.
         MockUSDC(d.usdc).mint(lender, 2_000e6);
@@ -72,9 +79,6 @@ contract LiquidationScenarioTest is Test {
         IEVault(d.debtVault).deposit(1_000e6, lender);
         vm.stopPrank();
 
-        MockKycNFT(d.kycNft).safeMint(vault);
-        MockKycNFT(d.kycNft).safeMint(borrower);
-        MockKycNFT(d.kycNft).safeMint(lender);
         MockWTGXX(d.wtgxx).mint(borrower, COLLATERAL);
 
         _open();
@@ -98,14 +102,30 @@ contract LiquidationScenarioTest is Test {
         assertEq(IEVault(d.debtVault).LTVLiquidation(vault), LTV_LIQUIDATION);
     }
 
-    /// @dev 만기 경과를 EVK 언어로 번역합니다. PoC 한정 우회입니다.
+    /// @dev 만기 경과를 청산 가능 상태로 바꿉니다. 손으로 setLTV 를 부르지 않습니다.
+    ///
+    ///      발동만으로는 이 차입자(담보 100 대비 부채 약 80.8)가 아직 청산 대상이 아닙니다.
+    ///      사다리가 개시 한도 92%에서 출발해 0까지 내려가므로, 조정담보가 부채 아래로
+    ///      내려올 때까지 기다려야 합니다. 그 기다림까지 포함해 "부도 판정"으로 묶습니다.
     function _markDefaultOnChain() internal {
-        IEVault(d.debtVault).setLTV(vault, LTV_ON_DEFAULT, LTV_ON_DEFAULT, 0);
+        if (controller.rampStartedAt(vault) == 0) {
+            vm.prank(lender);
+            controller.triggerMaturity(vault, borrower);
+        }
+
+        uint32 ramp = controller.rampDuration();
+        for (uint256 i; i < 50; ++i) {
+            (uint256 maxRepay,) = IEVault(d.debtVault).checkLiquidation(lender, borrower, vault);
+            if (maxRepay > 0) return;
+            skip(ramp / 50);
+        }
+        revert("ramp never opened liquidation");
     }
 
-    // --- 백서 4.4절이 EVK에 없다는 증거 ---
+    // --- 만기만으로는 EVK가 꿈쩍하지 않는다. 그래서 컨트랙트가 필요하다 ---
 
-    /// 만기가 지나도 건전성이 깨지지 않습니다. 담보가 충분하기 때문입니다.
+    /// 만기가 지나도 EVK 기준으로는 건전합니다. 담보가 충분하기 때문입니다.
+    /// @dev 이것이 백서 4.4절과 EVK가 어긋나는 지점이고, MaturityController 의 존재 이유입니다.
     function test_positionStillHealthyAfterMaturity() public {
         skip(TERM + 1 days);
 
@@ -115,7 +135,7 @@ contract LiquidationScenarioTest is Test {
         assertGt(collateralValue, liabilityValue, unicode"담보가 부족해졌습니다");
     }
 
-    /// 그래서 청산이 거부됩니다. 백서 4.4절을 EVK가 표현하지 못합니다.
+    /// 발동하지 않으면 청산이 거부됩니다.
     function test_liquidateRejectedWhileHealthy() public {
         skip(TERM + 1 days);
 
@@ -128,14 +148,29 @@ contract LiquidationScenarioTest is Test {
         IEVault(d.debtVault).liquidate(borrower, vault, PRINCIPAL, 0);
     }
 
-    /// LTV를 낮추면 비로소 청산 가능해집니다.
+    /// 발동하면 비로소 청산 가능해집니다. 사람이 아니라 컨트랙트가 엽니다.
     function test_ltvReductionEnablesLiquidation() public {
         skip(TERM + 1 days);
         _markDefaultOnChain();
 
         (uint256 maxRepay, uint256 maxYield) = IEVault(d.debtVault).checkLiquidation(lender, borrower, vault);
-        assertGt(maxRepay, 0, unicode"LTV 인하 후에도 청산이 불가합니다");
+        assertGt(maxRepay, 0, unicode"발동 후에도 청산이 불가합니다");
         assertGt(maxYield, 0);
+    }
+
+    /// 발동은 거버너의 재량이 아닙니다. 아무나 부르고, 만기 전에는 아무도 못 부릅니다.
+    function test_liquidationPathNeedsNoGovernorDiscretion() public {
+        assertEq(IEVault(d.debtVault).governorAdmin(), d.maturityController);
+
+        vm.expectRevert();
+        vm.prank(lender);
+        controller.triggerMaturity(vault, borrower); // 아직 만기 전
+
+        // 통지 창 안에서는 상대방만. 창이 지나면 지나가던 사람도 부릅니다.
+        skip(TERM + controller.noticeWindow());
+        vm.prank(makeAddr("passerby"));
+        controller.triggerMaturity(vault, borrower);
+        assertTrue(controller.marketClosed());
     }
 
     // --- 사전검사 ---
@@ -181,6 +216,7 @@ contract LiquidationScenarioTest is Test {
         _markDefaultOnChain();
 
         MockWTGXX(d.wtgxx).freeze(vault);
+        // 사전검사가 막아야 하는 상태입니다.
         assertFalse(precheck.canSettle(vault, lender), unicode"사전검사가 통과해버렸습니다");
 
         uint256 sharesBefore = IEVault(vault).balanceOf(lender);

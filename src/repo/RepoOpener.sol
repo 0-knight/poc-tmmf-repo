@@ -143,8 +143,13 @@ contract RepoOpener {
         if (!gate.canEnter(borrower)) revert E_BorrowerNotEligible(borrower);
         if (!gate.canEnter(lender)) revert E_LenderNotEligible(lender);
 
-        // 만기를 먼저 기록합니다. 개시가 실패하면 이 기록도 함께 되돌아갑니다.
+        // 만기와 상대방을 먼저 기록합니다. 개시가 실패하면 이 기록도 함께 되돌아갑니다.
+        //
+        // 상대방을 적는 이유가 둘입니다. 백서 4.5절의 손실 귀속이 "직접 계약한 대여자"를
+        // 가리키는데 전까지 그 주소가 스토리지에 없었고, 만기 후 통지 창 안에서 누가
+        // 부도를 선언할 수 있는지를 `MaturityController` 가 이 기록으로 판정합니다.
         maturityRegistry.setMaturity(borrower, maturity);
+        maturityRegistry.setCounterparty(borrower, lender);
 
         // 담보 예치. 차입자 권한으로 실행되며 훅이 소유자 여부를 확인합니다.
         if (collateralAmount > 0) {

@@ -13,6 +13,7 @@ import {CollateralVaultHook} from "../../src/vault/CollateralVaultHook.sol";
 import {WTGXXCollateralVault} from "../../src/vault/WTGXXCollateralVault.sol";
 import {FixedOneToOneOracle} from "../../src/oracle/FixedOneToOneOracle.sol";
 import {MockKycNFT} from "../../src/mocks/MockKycNFT.sol";
+import {ParticipantRegistry} from "../../src/registry/ParticipantRegistry.sol";
 
 /// @title CollateralVaultFactoryTest
 /// @notice M3 통과 기준. 볼트 주소가 예측 가능하고, 훅이 share 전송과 타인 예치를 막는가.
@@ -32,6 +33,11 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
     CollateralVaultFactory internal vaultFactory;
     MockKycNFT internal kyc;
 
+    /// @dev 이 파일은 훅 자체의 규칙(전송 차단, 소유자 전용 예치)을 봅니다. 게이트까지
+    ///      세우지 않고, 압류 수령자 자격은 승인 목록으로만 다룹니다. 게이트 경로는
+    ///      ParticipantRegistry.t.sol 과 SeizureBoundary.t.sol 이 봅니다.
+    ParticipantRegistry internal participants;
+
     address internal governor = makeAddr("radius-governor");
     address internal issuer = makeAddr("wisdomtree-issuer");
     address internal borrower = makeAddr("borrower");
@@ -48,6 +54,8 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
         adapter = new FixedOneToOneOracle(address(wtgxx), address(usdc));
         vm.prank(governor);
         router.govSetConfig(address(wtgxx), address(usdc), address(adapter));
+
+        participants = new ParticipantRegistry(address(0), address(this));
 
         address impl = address(new WTGXXCollateralVault(integrations, modules));
         vaultFactory = new CollateralVaultFactory(impl, address(router), address(usdc));
@@ -144,13 +152,14 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
 
     function _deployWithHook() internal returns (IEVault vault, CollateralVaultHook hook) {
         vault = IEVault(vaultFactory.deploy(borrower, address(wtgxx)));
-        hook = new CollateralVaultHook(address(evc), borrower);
+        hook = new CollateralVaultHook(address(evc), borrower, address(participants));
         vault.setHookConfig(address(hook), HOOKED_OPS);
     }
 
     function test_hookIdentifiesItself() public {
-        CollateralVaultHook hook = new CollateralVaultHook(address(evc), borrower);
+        CollateralVaultHook hook = new CollateralVaultHook(address(evc), borrower, address(participants));
         assertEq(hook.isHookTarget(), IHookTarget.isHookTarget.selector);
+        assertEq(address(hook.registry()), address(participants));
     }
 
     /// 소유자는 예치할 수 있습니다.
@@ -253,8 +262,10 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
         vault.transfer(stranger, 1e18);
         vm.stopPrank();
 
-        // 압류 문맥이면 통과합니다. 실제 청산은 LiquidationScenario 에서 검증합니다.
+        // 압류 문맥이면 통과합니다. 실제 청산은 LiquidationScenario 와
+        // SeizureBoundary 에서 검증합니다.
         assertEq(hook.owner(), borrower);
+        assertEq(address(hook.registry()), address(participants));
     }
 
     /// 출금은 훅에 걸리지 않습니다. 백서 6.1절 출구 무검사.
@@ -273,9 +284,12 @@ contract CollateralVaultFactoryTest is EVaultTestBase {
 
     function test_hookConstructorRejectsZero() public {
         vm.expectRevert(CollateralVaultHook.E_ZeroAddress.selector);
-        new CollateralVaultHook(address(0), borrower);
+        new CollateralVaultHook(address(0), borrower, address(participants));
 
         vm.expectRevert(CollateralVaultHook.E_ZeroAddress.selector);
-        new CollateralVaultHook(address(evc), address(0));
+        new CollateralVaultHook(address(evc), address(0), address(participants));
+
+        vm.expectRevert(CollateralVaultHook.E_ZeroAddress.selector);
+        new CollateralVaultHook(address(evc), borrower, address(0));
     }
 }

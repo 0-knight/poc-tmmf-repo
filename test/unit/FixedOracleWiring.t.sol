@@ -134,7 +134,7 @@ contract FixedOracleWiringTest is EVaultTestBase {
 
         usdc.approve(address(debtVault), type(uint256).max);
         debtVault.repay(type(uint256).max, borrower);
-        evc.disableController(address(debtVault));
+        debtVault.disableController();
 
         collateralVault.withdraw(100e18, borrower, borrower);
         vm.stopPrank();
