@@ -25,12 +25,17 @@ interface IEVCLike {
 }
 
 /// @title RepoOpener
-/// @notice 대출 개시의 유일한 경로. 게이트 통과와 만기 기록을 강제합니다.
+/// @notice 대출 개시의 유일한 경로. 게이트 통과, 만기 기록, 시장 만기 일치를 강제합니다.
 ///
 /// @dev 이 컨트랙트가 없으면 게이트가 장식입니다. 차입자가 부채 볼트의 borrow를 직접
 ///      부르면 화이트리스트 확인을 건너뛸 수 있고, 만기 레지스트리에 아무것도 남지 않아
-///      백서 4.4절의 청산 사유가 사라집니다. 개시 경로를 여기 하나로 좁혀 그 두 가지를
+///      백서 4.4절의 청산 사유가 사라집니다. 개시 경로를 여기 하나로 좁혀 그 세 가지를
 ///      강제합니다.
+///
+///      세 번째가 Wave 0에서 붙었습니다. 전까지 차입자가 open 인자로 아무 날짜나 넣을
+///      수 있어서 같은 부채 볼트에 서로 다른 만기가 섞였습니다. 백서 3.1절이 말하는
+///      "시장 하나에 만기 하나"가 성립하지 않는 상태였고, 만기에 LTV를 내리는 Wave 1의
+///      컨트랙트가 어느 날짜를 봐야 할지 정할 수 없었습니다.
 ///
 ///      **차입자 계정의 EVC operator로 등록되어야 합니다.** EVC operator 권한은 동작별로
 ///      쪼갤 수 없고 계정 전체에 걸립니다(백서 7.1절). 방어는 컨트랙트를 좁게 유지하는
@@ -53,6 +58,8 @@ contract RepoOpener {
     error E_MaturityNotInFuture(uint256 maturity);
     error E_ZeroPrincipal();
     error E_VaultMismatch(address expected, address given);
+    error E_MarketNotOpen(address market);
+    error E_MaturityNotMarketMaturity(uint256 given, uint256 market);
 
     event RepoOpened(
         address indexed borrower,
@@ -94,6 +101,12 @@ contract RepoOpener {
     /// @param principal 차입할 대여 자산 수량.
     /// @param maturity 만기 타임스탬프. 절대 시각입니다. 백서 3.1절.
     ///
+    ///        차입자가 고르는 값이 아닙니다. 시장이 공표한 만기와 정확히 같아야 하며,
+    ///        레지스트리에서 읽어 그대로 넘깁니다. 인자로 남겨둔 이유는 하나입니다 —
+    ///        차입자가 서명하는 트랜잭션에 자기가 동의한 날짜가 찍혀야 합니다.
+    ///        레지스트리에서 꺼내 쓰면 거버넌스가 만기를 굴린 직후 들어온
+    ///        트랜잭션이 본인이 모르는 날짜로 체결됩니다.
+    ///
     /// @dev 호출자가 차입자입니다. 서브계정에서 열려면 그 서브계정이 호출해야 하며,
     ///      operator 등록도 서브계정마다 별도로 필요합니다.
     ///
@@ -110,7 +123,14 @@ contract RepoOpener {
         address borrower = msg.sender;
 
         if (principal == 0) revert E_ZeroPrincipal();
+
+        // 만기가 지난 시장에서는 열 수 없습니다. 시장 만기를 굴리기 전까지 개시가 멈춥니다.
         if (maturity <= block.timestamp) revert E_MaturityNotInFuture(maturity);
+
+        // 백서 3.1절. 만기는 시장의 속성이고 차입자가 고르는 값이 아닙니다.
+        uint256 market = maturityRegistry.marketMaturity(debtVault);
+        if (market == 0) revert E_MarketNotOpen(debtVault);
+        if (maturity != market) revert E_MaturityNotMarketMaturity(maturity, market);
 
         // operator가 아니면 아래 EVC 호출이 실패하지만, 사유를 명확히 하기 위해 먼저 봅니다.
         if (!evc.isAccountOperatorAuthorized(borrower, address(this))) revert E_NotOperator(borrower);

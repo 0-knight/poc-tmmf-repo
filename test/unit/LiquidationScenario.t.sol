@@ -81,10 +81,14 @@ contract LiquidationScenarioTest is Test {
     }
 
     function _open() internal {
+        // 만기는 시장에서 읽습니다. 차입자가 고르는 값이 아닙니다. 백서 3.1절.
+        uint256 maturity = MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault);
+        assertEq(maturity, block.timestamp + TERM, unicode"시장 만기가 기대와 다릅니다");
+
         vm.startPrank(borrower);
         MockWTGXX(d.wtgxx).approve(vault, type(uint256).max);
         evc.setAccountOperator(borrower, address(opener), true);
-        opener.open(vault, COLLATERAL, PRINCIPAL, block.timestamp + TERM, lender);
+        opener.open(vault, COLLATERAL, PRINCIPAL, maturity, lender);
         vm.stopPrank();
     }
 

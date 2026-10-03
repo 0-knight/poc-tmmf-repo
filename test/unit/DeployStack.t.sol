@@ -102,6 +102,29 @@ contract DeployStackTest is Test {
         assertTrue(WTGXXGate(d.gate).canEnter(borrower));
     }
 
+    /// 배포 시점에 시장의 만기가 공표돼 있어야 합니다. 백서 3.1절.
+    function test_marketMaturityPublished() public view {
+        MaturityRegistry reg = MaturityRegistry(d.maturityRegistry);
+
+        assertEq(reg.marketMaturity(d.debtVault), block.timestamp + 7 days);
+        assertFalse(reg.isMarketMatured(d.debtVault));
+    }
+
+    function test_marketMaturesAfterTerm() public {
+        MaturityRegistry reg = MaturityRegistry(d.maturityRegistry);
+
+        skip(7 days);
+        assertTrue(reg.isMarketMatured(d.debtVault), unicode"만기가 지났는데 시장이 살아 있습니다");
+    }
+
+    /// 열지 않은 시장은 만기가 0입니다. 미개설과 만기 경과를 구분해야 합니다.
+    function test_unopenedMarketHasNoMaturity() public view {
+        MaturityRegistry reg = MaturityRegistry(d.maturityRegistry);
+
+        assertEq(reg.marketMaturity(vault), 0);
+        assertFalse(reg.isMarketMatured(vault));
+    }
+
     function test_maturityRegistryUsable() public {
         uint256 maturity = block.timestamp + 7 days;
         vm.prank(borrower);

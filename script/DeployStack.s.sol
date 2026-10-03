@@ -80,6 +80,10 @@ contract DeployStack is Script {
     ///      청산이 한 블록 밀리고, 그 사이 차입자가 담보를 빼는 경로가 생깁니다.
     uint16 internal constant LIQUIDATION_COOL_OFF = 0;
 
+    /// @dev 시장의 기간. 백서 3.1절 — 시장 하나가 만기 하나입니다. 차입자가 각자
+    ///      만기를 고르는 것이 아니라 배포 시점에 시장이 만기를 정하고 공표합니다.
+    uint256 internal constant MARKET_TERM = 7 days;
+
     uint256 internal constant NOMINAL_APR = 0.5e18; // 연 50% 명목
 
     struct Deployment {
@@ -189,6 +193,10 @@ contract DeployStack is Script {
         // 레지스트리와 순환 의존이라 배포 후 registrar로 지정합니다.
         d.repoOpener = address(new RepoOpener(d.evc, d.gate, d.maturityRegistry, d.debtVault, d.wtgxx));
         MaturityRegistry(d.maturityRegistry).setRegistrar(d.repoOpener);
+
+        // 시장의 만기를 공표합니다. 백서 3.1절. 이 한 줄이 없으면 RepoOpener가
+        // 개시를 거부합니다 — 만기 없는 시장에서는 repo를 열 수 없습니다.
+        MaturityRegistry(d.maturityRegistry).setMarketMaturity(d.debtVault, block.timestamp + MARKET_TERM);
     }
 
     /// @notice 차입자별 담보 볼트를 배포하고 설정합니다.
@@ -247,5 +255,9 @@ contract DeployStack is Script {
         require(CollateralVaultFactory(d.collateralVaultFactory).oracle() == d.router, "factory oracle");
         require(MaturityRegistry(d.maturityRegistry).registrar() == d.repoOpener, "registrar wiring");
         require(RepoOpener(d.repoOpener).debtVault() == d.debtVault, "opener debt vault");
+        require(
+            MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault) == block.timestamp + MARKET_TERM,
+            "market maturity"
+        );
     }
 }

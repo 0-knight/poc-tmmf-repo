@@ -10,6 +10,7 @@ contract MaturityRegistryTest is Test {
     address internal registrar = makeAddr("registrar");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
+    address internal market = makeAddr("market"); // 부채 볼트 자리
 
     uint256 internal constant TERM = 7 days;
 
@@ -136,6 +137,90 @@ contract MaturityRegistryTest is Test {
         vm.warp(block.timestamp + TERM + 1);
         assertTrue(registry.isDefaulted(alice));
         assertFalse(registry.isDefaulted(bob));
+    }
+
+    // --- 시장의 만기. 백서 3.1절 ---
+
+    function test_setMarketMaturity_byAdmin() public {
+        uint256 maturity = block.timestamp + TERM;
+        vm.prank(registrar); // 생성자 인자가 admin 자리입니다
+        registry.setMarketMaturity(market, maturity);
+
+        assertEq(registry.marketMaturity(market), maturity);
+        assertFalse(registry.isMarketMatured(market));
+    }
+
+    function test_setMarketMaturity_rejectsThirdParty() public {
+        vm.prank(alice);
+        vm.expectRevert(MaturityRegistry.NotAdmin.selector);
+        registry.setMarketMaturity(market, block.timestamp + TERM);
+    }
+
+    function test_setMarketMaturity_rejectsPast() public {
+        uint256 past = block.timestamp;
+        vm.prank(registrar);
+        vm.expectRevert(abi.encodeWithSelector(MaturityRegistry.MaturityInPast.selector, past, block.timestamp));
+        registry.setMarketMaturity(market, past);
+    }
+
+    function test_setMarketMaturity_rejectsZeroMarket() public {
+        vm.prank(registrar);
+        vm.expectRevert(MaturityRegistry.ZeroAddress.selector);
+        registry.setMarketMaturity(address(0), block.timestamp + TERM);
+    }
+
+    /// 계정별 만기와 달리 시장 만기는 덮어쓸 수 있습니다. 다음 기간으로 굴리는 동작입니다.
+    function test_setMarketMaturity_rollsForward() public {
+        uint256 first = block.timestamp + TERM;
+        vm.prank(registrar);
+        registry.setMarketMaturity(market, first);
+
+        vm.warp(first + 1);
+        uint256 second = block.timestamp + TERM;
+        vm.prank(registrar);
+        registry.setMarketMaturity(market, second);
+
+        assertEq(registry.marketMaturity(market), second);
+        assertFalse(registry.isMarketMatured(market));
+    }
+
+    /// 만기를 굴려도 이미 열린 계약의 기록은 그대로입니다. 진행 중인 계약을 깨뜨릴 수 없습니다.
+    function test_rollingMarketDoesNotTouchOpenContracts() public {
+        uint256 first = block.timestamp + TERM;
+        vm.prank(registrar);
+        registry.setMarketMaturity(market, first);
+
+        vm.prank(alice);
+        registry.setMaturity(alice, first);
+
+        vm.warp(first + 1);
+        vm.prank(registrar);
+        registry.setMarketMaturity(market, block.timestamp + TERM);
+
+        assertEq(registry.maturityOf(alice), first, unicode"열린 계약의 만기가 바뀌었습니다");
+        assertTrue(registry.isDefaulted(alice), unicode"만기가 지난 계약이 디폴트로 안 잡힙니다");
+    }
+
+    /// 만기 정각에 시장은 만기입니다. 계정의 isDefaulted 와 한 칸 다릅니다.
+    ///
+    /// @dev 일부러 다릅니다. 시장은 정각에 닫혀야 새 개시가 들어오지 않고,
+    ///      계정은 정각까지 상환할 수 있어야 그 순간의 상환이 연체가 아닙니다.
+    function test_isMarketMatured_trueAtExactMaturity() public {
+        uint256 maturity = block.timestamp + TERM;
+        vm.prank(registrar);
+        registry.setMarketMaturity(market, maturity);
+
+        vm.warp(maturity);
+        assertTrue(registry.isMarketMatured(market));
+
+        vm.prank(alice);
+        registry.setMaturity(alice, maturity + 1);
+        assertFalse(registry.isDefaulted(alice));
+    }
+
+    function test_isMarketMatured_falseWhenUnopened() public {
+        vm.warp(block.timestamp + 365 days);
+        assertFalse(registry.isMarketMatured(market));
     }
 
     function test_constructor_rejectsZeroRegistrar() public {

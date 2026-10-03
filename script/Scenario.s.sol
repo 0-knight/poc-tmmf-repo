@@ -68,7 +68,6 @@ contract Scenario is Script {
 
     uint256 internal constant COLLATERAL = 100e18;
     uint256 internal constant PRINCIPAL = 80e6;
-    uint256 internal constant TERM = 7 days;
 
     string internal constant STATE_FILE = "./broadcast/scenario-state.json";
 
@@ -119,6 +118,12 @@ contract Scenario is Script {
         console.log("gate.canEnter(borrower)", WTGXXGate(d.gate).canEnter(borrower));
         console.log("gate.canEnter(lender)  ", WTGXXGate(d.gate).canEnter(lender));
         console.log("");
+        console.log("market maturity        ", MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault));
+        console.log("now                    ", block.timestamp);
+        console.log("borrow LTV             ", IEVault(d.debtVault).LTVBorrow(vault));
+        console.log("liquidation LTV        ", IEVault(d.debtVault).LTVLiquidation(vault));
+        console.log("max liq discount       ", IEVault(d.debtVault).maxLiquidationDiscount());
+        console.log("");
         console.log("vault address was predictable:", vault == opener.debtVault() ? false : true);
     }
 
@@ -135,7 +140,11 @@ contract Scenario is Script {
 
         // 차입자가 operator 를 등록하고 대출을 엽니다. 차입자 본인 트랜잭션입니다.
         // 테스트에서는 vm.prank 로 넘어갔던 부분이며, 실제로는 두 트랜잭션입니다.
-        uint256 maturity = block.timestamp + TERM;
+        //
+        // 만기는 시장에서 읽습니다. 백서 3.1절. 전까지 여기서 block.timestamp + 7 days 로
+        // 계산했는데, step1 과 step2 가 다른 블록이라 차입자마다 만기가 달라졌습니다.
+        uint256 maturity = MaturityRegistry(s.maturityRegistry).marketMaturity(s.debtVault);
+        require(maturity != 0, "market not open");
 
         vm.startBroadcast(_pk("BORROWER_PK", PK_BORROWER));
         MockWTGXX(s.wtgxx).approve(s.vault, type(uint256).max);

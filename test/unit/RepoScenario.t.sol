@@ -70,9 +70,14 @@ contract RepoScenarioTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev 시장이 공표한 만기. 차입자는 이것을 읽어 그대로 넘깁니다. 백서 3.1절.
+    function _marketMaturity() internal view returns (uint256) {
+        return MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault);
+    }
+
     function _open() internal returns (uint256 maturity) {
         _prepareBorrower();
-        maturity = block.timestamp + TERM;
+        maturity = _marketMaturity();
 
         vm.prank(borrower);
         opener.open(vault, COLLATERAL, PRINCIPAL, maturity, lender);
@@ -87,6 +92,61 @@ contract RepoScenarioTest is Test {
         assertEq(IEVault(vault).balanceOf(borrower), COLLATERAL);
         assertEq(IEVault(d.debtVault).debtOf(borrower), PRINCIPAL);
         assertEq(MaturityRegistry(d.maturityRegistry).maturityOf(borrower), maturity);
+        assertEq(maturity, block.timestamp + TERM, unicode"시장 만기가 기대와 다릅니다");
+    }
+
+    // --- 만기는 시장의 속성이다. 백서 3.1절 ---
+
+    /// 차입자가 자기 만기를 고를 수 없습니다. 하루라도 다르면 거부합니다.
+    function test_open_rejectsMaturityOtherThanMarket() public {
+        _prepareBorrower();
+        uint256 market = _marketMaturity();
+        uint256 mine = market + 1 days;
+
+        vm.prank(borrower);
+        vm.expectRevert(
+            abi.encodeWithSelector(RepoOpener.E_MaturityNotMarketMaturity.selector, mine, market)
+        );
+        opener.open(vault, COLLATERAL, PRINCIPAL, mine, lender);
+    }
+
+    /// 더 짧게 빌리는 것도 안 됩니다. 시장이 한 만기로 묶여 있어야 상계가 성립합니다.
+    function test_open_rejectsShorterMaturity() public {
+        _prepareBorrower();
+        uint256 market = _marketMaturity();
+        uint256 mine = market - 1 days;
+
+        vm.prank(borrower);
+        vm.expectRevert(
+            abi.encodeWithSelector(RepoOpener.E_MaturityNotMarketMaturity.selector, mine, market)
+        );
+        opener.open(vault, COLLATERAL, PRINCIPAL, mine, lender);
+    }
+
+    /// 시장 만기가 지나면 새 개시가 멈춥니다. 거버넌스가 다음 기간으로 굴려야 다시 열립니다.
+    function test_open_rejectsAfterMarketMatured() public {
+        _prepareBorrower();
+        uint256 market = _marketMaturity();
+        skip(TERM);
+
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(RepoOpener.E_MaturityNotInFuture.selector, market));
+        opener.open(vault, COLLATERAL, PRINCIPAL, market, lender);
+    }
+
+    /// 만기를 다음 기간으로 굴리면 개시가 다시 열립니다.
+    function test_open_worksAfterMarketRolled() public {
+        _prepareBorrower();
+        skip(TERM);
+
+        uint256 next = block.timestamp + TERM;
+        MaturityRegistry(d.maturityRegistry).setMarketMaturity(d.debtVault, next);
+
+        vm.prank(borrower);
+        opener.open(vault, COLLATERAL, PRINCIPAL, next, lender);
+
+        assertEq(MaturityRegistry(d.maturityRegistry).maturityOf(borrower), next);
+        assertEq(IEVault(d.debtVault).debtOf(borrower), PRINCIPAL);
     }
 
     /// operator 등록 없이는 열 수 없습니다.
