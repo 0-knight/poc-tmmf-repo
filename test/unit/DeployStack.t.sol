@@ -60,7 +60,23 @@ contract DeployStackTest is Test {
         assertEq(v.asset(), d.wtgxx);
         assertEq(v.oracle(), d.router, unicode"오라클 자리에 라우터가 아닌 것이 들어갔습니다");
         assertEq(v.unitOfAccount(), d.usdc);
-        assertEq(IEVault(d.debtVault).LTVBorrow(vault), 0.9e4);
+
+        // 두 LTV가 벌어져 있어야 합니다. 같으면 한도까지 빌린 계정이 곧바로 청산 대상입니다.
+        assertEq(IEVault(d.debtVault).LTVBorrow(vault), 0.92e4, unicode"개시 한도가 92%가 아닙니다");
+        assertEq(IEVault(d.debtVault).LTVLiquidation(vault), 0.95e4, unicode"청산선이 95%가 아닙니다");
+        assertLt(
+            IEVault(d.debtVault).LTVBorrow(vault),
+            IEVault(d.debtVault).LTVLiquidation(vault),
+            unicode"두 LTV가 한 점에 붙어 있습니다"
+        );
+    }
+
+    /// 청산 파라미터를 배포 스크립트가 못 박아야 합니다. EVK 기본값에 기대지 않습니다.
+    function test_liquidationParamsConfigured() public view {
+        IEVault debtVault = IEVault(d.debtVault);
+
+        assertEq(debtVault.maxLiquidationDiscount(), 0.02e4, unicode"청산 할인 한도가 2%가 아닙니다");
+        assertEq(debtVault.liquidationCoolOffTime(), 0, unicode"청산 쿨오프가 0이 아닙니다");
     }
 
     /// 주소를 배포 전에 알 수 있어야 합니다. 백서 2.2절.

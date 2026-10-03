@@ -55,8 +55,31 @@ contract DeployStack is Script {
     /// @dev 담보 볼트에 훅으로 걸 연산. 출금은 걸지 않습니다. 백서 6.1절.
     uint32 internal constant HOOKED_OPS = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5);
 
-    uint16 internal constant INITIAL_LTV = 0.9e4; // 90%
-    uint16 internal constant MAX_LIQUIDATION_DISCOUNT = 0.2e4; // 20%
+    /// @dev 두 LTV를 벌립니다. 전까지는 둘이 같아서 "빌릴 수 있는 한도"와 "청산되는 선"이
+    ///      한 점에 붙어 있었고, 한도까지 빌린 계정은 다음 블록에 바로 청산 대상이었습니다.
+    ///
+    ///      헤어컷으로 읽습니다 — 개시 8%, 청산 5%. 암호자산 관행이 아니라 전통 repo의
+    ///      헤어컷에서 왔습니다. 백서 4.2절은 "볼 것은 가격이 아니라 회수 시간"이라고
+    ///      적고, WTGXX는 $1 고정에 환매가 T+1이므로 덮어야 하는 것은 가격 변동이 아니라
+    ///      하루의 지연입니다.
+    ///
+    ///      전통금융의 정부채 MMF 헤어컷은 1~3%입니다. 우리가 더 넓게 잡은 이유는 둘
+    ///      입니다. 일일 마크와 마진콜이 아직 없어서 하루를 한 번에 덮어야 하고, 재담보
+    ///      체인에서는 사다리 칸마다 헤어컷이 쌓여 아래 칸의 여유가 위 칸의 완충이
+    ///      됩니다. 마진콜이 붙으면 이 숫자는 좁혀야 합니다.
+    uint16 internal constant BORROW_LTV = 0.92e4; // 92%. 개시 한도
+    uint16 internal constant LIQUIDATION_LTV = 0.95e4; // 95%. 청산선
+
+    /// @dev 청산 할인 한도. EVK는 담보가 부채에 얼마나 모자라는지에 비례해 할인율을
+    ///      계산하고(Liquidation.calculateMaxLiquidation), 이 값이 그 하한입니다.
+    ///      전까지 20%였는데, 정부채 MMF 담보에 20% 할인은 청산인에게 과한 보상입니다.
+    ///      백서 4.4절이 "할인은 0에서 시작해 선형으로 오른다"고 한 것과도 어긋납니다.
+    uint16 internal constant MAX_LIQUIDATION_DISCOUNT = 0.02e4; // 2%
+
+    /// @dev 청산 쿨오프. EVK 기본값은 0이지만 명시해 둡니다. 0이 아니면 만기 직후
+    ///      청산이 한 블록 밀리고, 그 사이 차입자가 담보를 빼는 경로가 생깁니다.
+    uint16 internal constant LIQUIDATION_COOL_OFF = 0;
+
     uint256 internal constant NOMINAL_APR = 0.5e18; // 연 50% 명목
 
     struct Deployment {
@@ -158,6 +181,7 @@ contract DeployStack is Script {
         debtVault.setHookConfig(address(0), 0);
         debtVault.setInterestRateModel(d.irm);
         debtVault.setMaxLiquidationDiscount(MAX_LIQUIDATION_DISCOUNT);
+        debtVault.setLiquidationCoolOffTime(LIQUIDATION_COOL_OFF);
         debtVault.setConfigFlags(CFG_DONT_SOCIALIZE_DEBT); // 백서 4.5절
         debtVault.setFeeReceiver(deployer);
 
@@ -182,7 +206,7 @@ contract DeployStack is Script {
         IEVault(vault).setHookConfig(hook, HOOKED_OPS);
 
         EulerRouter(d.router).govSetResolvedVault(vault, true);
-        IEVault(d.debtVault).setLTV(vault, INITIAL_LTV, INITIAL_LTV, 0);
+        IEVault(d.debtVault).setLTV(vault, BORROW_LTV, LIQUIDATION_LTV, 0);
 
         vm.stopBroadcast();
     }
@@ -214,6 +238,8 @@ contract DeployStack is Script {
         require(debtVault.unitOfAccount() == d.usdc, "debt vault unit");
         require(debtVault.interestRateModel() == d.irm, "irm wiring");
         require(debtVault.configFlags() == CFG_DONT_SOCIALIZE_DEBT, "socialization not disabled");
+        require(debtVault.maxLiquidationDiscount() == MAX_LIQUIDATION_DISCOUNT, "max liquidation discount");
+        require(debtVault.liquidationCoolOffTime() == LIQUIDATION_COOL_OFF, "liquidation cool off");
 
         require(EulerRouter(d.router).getConfiguredOracle(d.wtgxx, d.usdc) == d.priceAdapter, "router adapter");
         require(FixedOneToOneOracle(d.priceAdapter).getQuote(1e18, d.wtgxx, d.usdc) == 1e6, "oracle scaling");

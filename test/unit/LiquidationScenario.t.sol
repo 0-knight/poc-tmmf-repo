@@ -52,7 +52,8 @@ contract LiquidationScenarioTest is Test {
     uint256 internal constant PRINCIPAL = 80e6;
     uint256 internal constant TERM = 7 days;
 
-    uint16 internal constant LTV_INITIAL = 0.9e4;
+    uint16 internal constant LTV_BORROW = 0.92e4;
+    uint16 internal constant LTV_LIQUIDATION = 0.95e4;
     uint16 internal constant LTV_ON_DEFAULT = 0.7e4;
 
     function setUp() public {
@@ -85,6 +86,12 @@ contract LiquidationScenarioTest is Test {
         evc.setAccountOperator(borrower, address(opener), true);
         opener.open(vault, COLLATERAL, PRINCIPAL, block.timestamp + TERM, lender);
         vm.stopPrank();
+    }
+
+    /// 배포가 두 LTV를 벌려 놓았는지 확인합니다. 아래 청산 테스트들이 기대는 전제입니다.
+    function test_ltvSplitAtDeploy() public view {
+        assertEq(IEVault(d.debtVault).LTVBorrow(vault), LTV_BORROW);
+        assertEq(IEVault(d.debtVault).LTVLiquidation(vault), LTV_LIQUIDATION);
     }
 
     /// @dev 만기 경과를 EVK 언어로 번역합니다. PoC 한정 우회입니다.
