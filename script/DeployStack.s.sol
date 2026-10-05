@@ -158,6 +158,43 @@ contract DeployStack is Script {
     uint256 internal constant RUNG2_APR = 0.40e18; // 연 40%
     uint256 internal constant RUNG3_APR = 0.30e18; // 연 30%
 
+    /// @notice 사다리 한 칸의 기본 단위. 담보 WTGXX와 대여자 USDC가 둘 다 이 수량입니다.
+    ///
+    /// @dev **기간 상수와 같은 이유로 뺐습니다.** 기본값 100은 테스트가 쓰는 값이고, 샌드박스
+    ///      잔고는 그만큼 없습니다. 시연 중에 숫자를 줄이려고 코드를 고쳐 다시 배포하는 일을
+    ///      없애기 위해 환경 변수로 받습니다.
+    ///
+    ///      단위는 **개수**입니다. wei가 아닙니다. `SCALE_UNIT=20` 이면 담보 20 WTGXX,
+    ///      칸마다 예치 20 USDC 입니다. decimals 보정은 아래 두 함수가 합니다.
+    uint256 internal constant DEFAULT_SCALE_UNIT = 100;
+
+    /// @dev 칸마다 끌어쓰는 비율. 그 칸의 **개시 LTV보다 낮아야** 합니다.
+    ///      숫자를 손으로 적지 않고 비율에서 끌어내는 이유가 이것입니다 — `SCALE_UNIT` 을
+    ///      바꿔도 LTV 여유가 그대로 유지됩니다.
+    uint16 internal constant DRAW_RUNG1 = 0.80e4; // A가 WTGXX 담보로. 개시 LTV 92%
+    uint16 internal constant DRAW_RUNG2 = 0.80e4; // B가 eV_B 담보로. 개시 LTV 85%
+    uint16 internal constant DRAW_RUNG3 = 0.70e4; // C가 eV_C 담보로. 개시 LTV 78%
+
+    function scaleUnit() public view returns (uint256 value) {
+        value = vm.envOr("SCALE_UNIT", DEFAULT_SCALE_UNIT);
+        require(value > 0, "SCALE_UNIT must be positive");
+    }
+
+    /// @notice A가 거는 WTGXX 수량. WTGXX는 18 decimals 입니다.
+    function collateralAmount() public view returns (uint256) {
+        return scaleUnit() * 1e18;
+    }
+
+    /// @notice 대여자 한 명이 자기 볼트에 넣는 USDC. USDC는 6 decimals 입니다.
+    function supplyAmount() public view returns (uint256) {
+        return scaleUnit() * 1e6;
+    }
+
+    /// @notice 비율에서 차입액을 끌어냅니다. 담보 가치가 1:1이라 예치액을 기준으로 씁니다.
+    function drawAmount(uint16 ratio) public view returns (uint256) {
+        return (supplyAmount() * ratio) / 1e4;
+    }
+
     struct Deployment {
         address evc;
         address factory;
@@ -194,6 +231,120 @@ contract DeployStack is Script {
 
         _log(d, deployer);
         _verify(d);
+    }
+
+    struct ChainDeployment {
+        Deployment d;
+        Rung rungC;
+        Rung rungD;
+        address vaultA;
+        address hookA;
+        address borrower;
+    }
+
+    string internal constant CHAIN_STATE_FILE = "./broadcast/chain-state.json";
+
+    /// @notice 사다리 세 칸을 한 번에 올립니다. 시연 배포의 진입점입니다.
+    ///
+    /// @dev `run()` 은 기반 스택 + 부채 볼트 하나(V_B)까지입니다. 둘째·셋째 칸은
+    ///      `deployRung` 으로 따로 올려야 하는데 지금까지 그걸 부르는 건 테스트뿐이었습니다.
+    ///
+    ///      **이 함수가 최상위 진입점이어야 합니다.** keystore 로 배포하면 `PRIVATE_KEY` 가
+    ///      없고 배포자는 `msg.sender` 인데, forge 는 `--sender` 로 받은 주소를 **최상위
+    ///      함수의** `msg.sender` 로만 세웁니다. 다른 스크립트가 `new DeployStack()` 뒤
+    ///      외부 호출하면 그 스크립트 주소가 배포자가 되어 거버너와 레지스트리 소유권이
+    ///      통째로 아무도 키를 모르는 주소로 갑니다. 되돌릴 수 없습니다.
+    ///
+    ///          forge script script/DeployStack.s.sol:DeployStack --sig "runChain()" \
+    ///            --rpc-url $RPC --account radius-deployer --sender 0x8CBF70... --broadcast
+    ///
+    ///      `--sender` 를 빼면 로그의 `deployer` 가 `0x1804c8AB...`(Foundry 기본 발신자)로
+    ///      찍힙니다. 배포 전에 `--broadcast` 없이 돌려 그 줄을 먼저 확인하세요.
+    function runChain() external returns (ChainDeployment memory c) {
+        uint256 pk = vm.envOr("PRIVATE_KEY", uint256(0));
+        address deployer = pk == 0 ? msg.sender : vm.addr(pk);
+
+        if (pk == 0) vm.startBroadcast(deployer);
+        else vm.startBroadcast(pk);
+        c.d = _deploy(deployer);
+        vm.stopBroadcast();
+
+        _verify(c.d);
+
+        c.borrower = vm.envOr("BORROWER_ADDRESS", deployer);
+        (c.vaultA, c.hookA) = deployCollateralVault(c.d, c.borrower);
+
+        c.rungC = deployRung(c.d, c.d.debtVault, RUNG2_BORROW_LTV, RUNG2_LIQUIDATION_LTV, RUNG2_APR);
+        c.rungD = deployRung(c.d, c.rungC.debtVault, RUNG3_BORROW_LTV, RUNG3_LIQUIDATION_LTV, RUNG3_APR);
+
+        _logChain(c, deployer);
+        _writeChainState(c, deployer);
+    }
+
+    function _logChain(ChainDeployment memory c, address deployer) internal view {
+        _log(c.d, deployer);
+
+        console.log("");
+        console.log("=== rung ladder ===");
+        console.log("borrower A             ", c.borrower);
+        console.log("V_A collateral vault   ", c.vaultA);
+        console.log("V_A hook               ", c.hookA);
+        console.log("V_B debt vault         ", c.d.debtVault);
+        console.log("V_C debt vault         ", c.rungC.debtVault);
+        console.log("V_D debt vault         ", c.rungD.debtVault);
+        console.log("opener  B              ", c.d.repoOpener);
+        console.log("opener  C              ", c.rungC.opener);
+        console.log("opener  D              ", c.rungD.opener);
+        console.log("controller B           ", c.d.maturityController);
+        console.log("controller C           ", c.rungC.controller);
+        console.log("controller D           ", c.rungD.controller);
+
+        console.log("");
+        console.log("=== demo amounts ===");
+        console.log("SCALE_UNIT             ", scaleUnit());
+        console.log("A collateral WTGXX     ", collateralAmount());
+        console.log("each lender supplies   ", supplyAmount());
+        console.log("A draws                ", drawAmount(DRAW_RUNG1));
+        console.log("B draws                ", drawAmount(DRAW_RUNG2));
+        console.log("C draws                ", drawAmount(DRAW_RUNG3));
+        console.log("market term seconds    ", marketTerm());
+        console.log("notice window seconds  ", uint256(noticeWindow()));
+        console.log("ramp duration seconds  ", uint256(rampDuration()));
+    }
+
+    /// @dev 다음 단계 스크립트가 주소를 읽어갑니다. 사람이 손으로 옮겨 적지 않게 합니다.
+    function _writeChainState(ChainDeployment memory c, address deployer) internal {
+        string memory json = "chain";
+        vm.serializeAddress(json, "evc", c.d.evc);
+        vm.serializeAddress(json, "router", c.d.router);
+        vm.serializeAddress(json, "maturityRegistry", c.d.maturityRegistry);
+        vm.serializeAddress(json, "gate", c.d.gate);
+        vm.serializeAddress(json, "wtgxx", c.d.wtgxx);
+        vm.serializeAddress(json, "usdc", c.d.usdc);
+        vm.serializeAddress(json, "kycNft", c.d.kycNft);
+        vm.serializeAddress(json, "deployer", deployer);
+        vm.serializeAddress(json, "borrower", c.borrower);
+        vm.serializeAddress(json, "vaultA", c.vaultA);
+        vm.serializeAddress(json, "vaultB", c.d.debtVault);
+        vm.serializeAddress(json, "vaultC", c.rungC.debtVault);
+        vm.serializeAddress(json, "vaultD", c.rungD.debtVault);
+        vm.serializeAddress(json, "openerB", c.d.repoOpener);
+        vm.serializeAddress(json, "openerC", c.rungC.opener);
+        vm.serializeAddress(json, "openerD", c.rungD.opener);
+        vm.serializeAddress(json, "controllerB", c.d.maturityController);
+        vm.serializeAddress(json, "controllerC", c.rungC.controller);
+        vm.serializeAddress(json, "controllerD", c.rungD.controller);
+
+        // 금액도 함께 적습니다. **배포 시점의 값이 어디에도 안 남으면 다음 단계
+        // 스크립트가 호출 시점 환경 변수를 다시 읽고, 그게 비어 있으면 기본값 100으로
+        // 조용히 돌아갑니다.** 10/04 리허설에서 여섯 단계가 그렇게 죽었습니다.
+        vm.serializeUint(json, "scaleUnit", scaleUnit());
+        vm.serializeUint(json, "collateralAmount", collateralAmount());
+        vm.serializeUint(json, "supplyAmount", supplyAmount());
+        vm.serializeUint(json, "drawA", drawAmount(DRAW_RUNG1));
+        vm.serializeUint(json, "drawB", drawAmount(DRAW_RUNG2));
+        string memory out = vm.serializeUint(json, "drawC", drawAmount(DRAW_RUNG3));
+        vm.writeJson(out, CHAIN_STATE_FILE);
     }
 
     function _deploy(address deployer) internal returns (Deployment memory d) {

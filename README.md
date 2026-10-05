@@ -82,6 +82,113 @@ cast call --rpc-url $RPC $WTGXX "isAddressWhitelisted(address,address,uint256)(b
 cast call --rpc-url $RPC $GATE  "checkEntry(address)(uint8)" $D   # 2 = ComplianceRemoved
 ```
 
+### 사다리 세 칸을 올리려면
+
+`run()` 은 기반 스택과 부채 볼트 **하나**까지입니다. 사다리의 둘째·셋째 칸은 `runChain()` 이
+올립니다. 배포가 끝나면 주소를 `broadcast/chain-state.json` 에 적어 다음 단계 스크립트가
+읽어갑니다.
+
+```bash
+SCALE_UNIT=20 \
+BORROWER_ADDRESS=0x346F46403f0E2Cb7461b2C0fBc23921b99789Db7 \
+WTGXX_ADDRESS=0x0b2517eef907389F36fd87Add36E9118d364BD67 \
+USDC_ADDRESS=0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 \
+MARKET_TERM=1800 MATURITY_NOTICE_WINDOW=300 MATURITY_RAMP_DURATION=300 \
+forge script script/DeployStack.s.sol:DeployStack --sig "runChain()" \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --account radius-deployer --sender 0x8CBF705774619d30965bE88648c6C5a68A48DE1e
+```
+
+**`--sender` 를 반드시 같이 주세요.** keystore로 배포하면 `PRIVATE_KEY` 가 없고, 그러면
+스크립트는 `msg.sender` 를 배포자로 씁니다. `--account` 는 트랜잭션에 **서명할 지갑**만 정하고
+스크립트 안의 `msg.sender` 는 바꾸지 않습니다. 빠뜨리면 Foundry 기본 발신자
+`0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38` 가 모든 볼트의 거버너와 레지스트리 소유자가 됩니다.
+아무도 그 키를 모르므로 되돌릴 수 없습니다.
+
+위 명령에는 `--broadcast` 가 없습니다. 먼저 이대로 돌려 로그 첫 줄을 봅니다.
+
+```
+deployer                0x8CBF705774619d30965bE88648c6C5a68A48DE1e
+```
+
+이 주소가 맞게 찍히고 맨 아래 `Estimated amount required` 가 잔고 안에 들어올 때만 `--broadcast`
+를 붙입니다.
+
+### 사다리를 눌러 보여주려면
+
+`script/Chain.s.sol` 이 단계마다 하나씩 있습니다. **단계마다 보내는 사람이 다릅니다** —
+forge script 는 한 번에 한 발신자만 쓰므로 `--sender` 와 `--account` 를 바꿔 가며 부릅니다.
+스크립트 안에 개인키는 없습니다.
+
+참여자 주소를 먼저 세웁니다. 주소는 `broadcast/chain-state.json` 에서 읽으므로 안 넘겨도 됩니다.
+
+```bash
+export ADDR_A=0x346F46403f0E2Cb7461b2C0fBc23921b99789Db7
+export ADDR_B=0x8CBF705774619d30965bE88648c6C5a68A48DE1e
+export ADDR_C=0x861d0C765424B685254b5247c4d851478A9Be9FC
+export ADDR_D=0x209ae17D61c299F91e8BE5365280dF0a9095fD19
+export ADDR_L=0xc20aa1645047D128B899D724abC7303eC558BDCc
+
+run() { forge script script/Chain.s.sol:RepoChain --sig "$1" \
+  --rpc-url $RPC --account "$2" --sender "$3" --broadcast; }
+```
+
+**금액은 `SCALE_UNIT` 을 다시 세울 필요가 없습니다.** `runChain()` 이 배포할 때 쓴 값을
+`chain-state.json` 에 적어 두고 단계 스크립트가 거기서 읽습니다.
+
+이게 중요한 이유가 있습니다. 예전에는 단계마다 환경 변수를 다시 읽었고, 비어 있으면 기본값
+100으로 **조용히** 돌아갔습니다. 10/04 리허설에서 여섯 단계가 그래서 죽었습니다
+(`ERC20: transfer amount exceeds balance`). 지금은 상태 파일에 값이 없는 옛 배포만 환경
+변수로 넘어가고, 그마저 비어 있으면 기본값으로 가지 않고 **멈춥니다.**
+
+`MARKET_TERM` 만 `rollMaturity()` 에서 여전히 환경 변수입니다. 배포 때 쓴 기간이 아니라
+지금 굴릴 기간이라 상태 파일에서 읽으면 안 됩니다. 안 세우면 역시 멈춥니다.
+
+**넷 다 게이트를 통과해야 합니다.** `RepoOpener.open` 이 개시 때 차입자와 대여자 양쪽에
+`canEnter` 를 겁니다. C·D 는 WTGXX 에 닿지 않지만 오프너가 참여자 자격으로 검사합니다.
+
+```bash
+forge script script/Chain.s.sol:RepoChain --sig "checkParties()" --rpc-url $RPC
+```
+
+여섯 줄이 전부 `0` 이어야 시작할 수 있습니다.
+
+순서는 **위 칸부터**입니다. 꼭대기가 현금을 대야 아래 칸이 빌릴 수 있습니다.
+
+```bash
+run "rollMaturity()" radius-deployer $ADDR_B   # 시연 직전에. 사다리를 세우기 전에
+
+run "supplyD()"  radius-d        $ADDR_D
+run "supplyC()"  radius-c        $ADDR_C
+run "openC()"    radius-c        $ADDR_C       # C 가 eV_C 를 걸고 D 에게서 빌린다
+run "supplyB()"  radius-deployer $ADDR_B
+run "openB()"    radius-deployer $ADDR_B       # B 가 eV_B 를 걸고 C 에게서 빌린다
+run "openA()"    radius-borrower $ADDR_A       # A 가 WTGXX 를 걸고 B 에게서 빌린다
+```
+
+사다리가 섰습니다. 여기서 한 화면을 보여줍니다.
+
+```bash
+forge script script/Chain.s.sol:RepoChain --sig "status()" --rpc-url $RPC
+```
+
+`WTGXX in V_A` 만 값이 있고 나머지 셋이 0인 것이 첫 번째 요점입니다 — **담보는 맨 아래 칸을
+떠나지 않습니다.**
+
+만기가 지나면 통지와 청산입니다.
+
+```bash
+run "notice()"         radius-deployer $ADDR_B   # 창 안에는 상대방인 B 만
+run "liquidate()"      radius-liquidator $ADDR_L
+run "withdrawSeized()" radius-liquidator $ADDR_L # 담보가 여기서 처음 볼트를 떠난다
+```
+
+청산 뒤 `status()` 를 다시 찍는 것이 두 번째 요점입니다. `V_B totalAssets` 는 안 움직이고
+`B would redeem` 에서만 손실이 보입니다 — **부족분은 가격으로 번지지 않습니다.**
+
+L 은 부채를 떠안고 곧바로 갚으므로 **USDC 를 들고 있어야 합니다.** 차입액만큼 미리
+보내 두세요.
+
 ## 구성
 
 ```
@@ -608,6 +715,30 @@ MATURITY_RAMP_DURATION   청산선이 0까지 내려가는 시간 (기본 1일)
 배포가 되돌아갑니다. 지우거나 주석으로 두어야 기본값이 쓰입니다. 그리고 **`forge test` 에는
 세우지 마세요** — 테스트가 7일과 1일을 박아 두고 있어 환경 변수를 세우면 그쪽이 깨집니다.
 배포와 시나리오 스크립트 전용입니다.
+
+`forge test` 가 셸 환경을 그대로 읽어간다는 게 핵심입니다. 시연 준비 중에 `export` 해 둔 값이
+테스트를 깨뜨립니다. 명령 앞에 붙이는 방식으로 쓰거나, 꼭 export 해야 하면 테스트는 이렇게
+돌리세요.
+
+```bash
+env -u MARKET_TERM -u MATURITY_NOTICE_WINDOW -u MATURITY_RAMP_DURATION forge test
+```
+
+**금액도 환경 변수입니다.** 같은 이유입니다 — 샌드박스 잔고가 기본값에 못 미칩니다.
+
+```
+SCALE_UNIT               사다리 한 칸의 단위 (기본 100)
+BORROWER_ADDRESS         담보를 거는 A. 안 세우면 배포자 자신
+```
+
+`SCALE_UNIT` 은 **개수**입니다. wei가 아닙니다. 20이면 담보 20 WTGXX, 칸마다 예치 20 USDC이고,
+차입액은 코드에 적힌 숫자가 아니라 **비율에서 나옵니다** — A 16, B 16, C 14.
+
+비율에서 끌어내는 이유가 중요합니다. 손으로 적으면 단위를 줄일 때 한 칸만 안 고쳐서 개시가
+조용히 막힙니다. 지금은 어떤 단위에서도 각 칸의 개시 LTV 아래에 머뭅니다.
+`test/unit/ScaleUnit.t.sol` 의 `test_everyRungStaysUnderItsBorrowLtv` 가 그걸 고정합니다.
+
+기본값 100으로 사다리를 세우려면 대여자 셋이 100씩, 합쳐 300 USDC가 듭니다.
 
 재담보 사다리의 칸별 파라미터입니다. 올라갈수록 LTV는 좁아지고 금리는 내려갑니다.
 
