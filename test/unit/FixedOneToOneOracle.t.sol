@@ -3,16 +3,20 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {FixedOneToOneOracle} from "../../src/oracle/FixedOneToOneOracle.sol";
+import {MockERC20} from "../../src/mocks/MockERC20.sol";
 
 contract FixedOneToOneOracleTest is Test {
     FixedOneToOneOracle internal oracle;
 
-    address internal constant WTGXX = address(0xA11CE);
-    address internal constant USDC = address(0xB0B);
+    /// @dev 오라클이 생성자에서 decimals를 직접 읽으므로 코드 있는 주소여야 합니다.
+    address internal WTGXX;
+    address internal USDC;
     address internal constant OTHER = address(0xC0FFEE);
 
     function setUp() public {
-        oracle = new FixedOneToOneOracle(WTGXX, 18, USDC, 6);
+        WTGXX = address(new MockERC20("WTGXX", "WTGXX", 18));
+        USDC = address(new MockERC20("USDC", "USDC", 6));
+        oracle = new FixedOneToOneOracle(WTGXX, USDC);
     }
 
     /// 1 WTGXX(18) 는 1 USDC(6) 와 같은 가치입니다.
@@ -78,18 +82,34 @@ contract FixedOneToOneOracleTest is Test {
 
     function test_constructor_rejectsZeroAddress() public {
         vm.expectRevert(FixedOneToOneOracle.ZeroAddress.selector);
-        new FixedOneToOneOracle(address(0), 18, USDC, 6);
+        new FixedOneToOneOracle(address(0), USDC);
     }
 
     function test_constructor_rejectsSameAsset() public {
         vm.expectRevert(FixedOneToOneOracle.SameAsset.selector);
-        new FixedOneToOneOracle(WTGXX, 18, WTGXX, 6);
+        new FixedOneToOneOracle(WTGXX, WTGXX);
     }
 
     /// 같은 decimals 쌍에서는 그대로 통과해야 합니다.
     function test_quote_sameDecimals_identity() public {
-        FixedOneToOneOracle flat = new FixedOneToOneOracle(WTGXX, 6, USDC, 6);
-        assertEq(flat.getQuote(1234e6, WTGXX, USDC), 1234e6);
+        address a = address(new MockERC20("A", "A", 6));
+        address b = address(new MockERC20("B", "B", 6));
+        FixedOneToOneOracle flat = new FixedOneToOneOracle(a, b);
+        assertEq(flat.getQuote(1234e6, a, b), 1234e6);
+    }
+
+    /// decimals를 못 읽는 주소로는 배포되지 않습니다.
+    /// 예전 생성자는 배포자가 넣은 값을 그대로 믿었고, 틀려도 조용했습니다.
+    function test_constructor_rejectsAssetWithoutDecimals() public {
+        vm.expectRevert(abi.encodeWithSelector(FixedOneToOneOracle.DecimalsUnavailable.selector, OTHER));
+        new FixedOneToOneOracle(OTHER, USDC);
+    }
+
+    /// 18을 넘는 decimals는 보정 식이 감당하지 못합니다.
+    function test_constructor_rejectsDecimalsAbove18() public {
+        address big = address(new MockERC20("BIG", "BIG", 19));
+        vm.expectRevert(abi.encodeWithSelector(FixedOneToOneOracle.DecimalsOutOfRange.selector, big, uint256(19)));
+        new FixedOneToOneOracle(big, USDC);
     }
 
     function testFuzz_roundTripNeverInflates(uint128 amount) public view {

@@ -47,17 +47,19 @@ contract RepoScenarioTest is Test {
         evc = EthereumVaultConnector(payable(d.evc));
         opener = RepoOpener(d.repoOpener);
 
+        // Wave 2부터 부채 볼트 입금에 자격 검사가 붙습니다. 화이트리스트를 먼저 깔아야
+        // 대여자가 자금을 넣을 수 있습니다 — 순서가 뒤바뀌면 setUp 이 되돌아갑니다.
+        // 온보딩: 볼트와 참여자 화이트리스트.
+        MockKycNFT(d.kycNft).safeMint(vault);
+        MockKycNFT(d.kycNft).safeMint(borrower);
+        MockKycNFT(d.kycNft).safeMint(lender);
+
         // 대여자 자금 공급.
         MockUSDC(d.usdc).mint(lender, 1_000e6);
         vm.startPrank(lender);
         MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
         IEVault(d.debtVault).deposit(1_000e6, lender);
         vm.stopPrank();
-
-        // 온보딩: 볼트와 참여자 화이트리스트.
-        MockKycNFT(d.kycNft).safeMint(vault);
-        MockKycNFT(d.kycNft).safeMint(borrower);
-        MockKycNFT(d.kycNft).safeMint(lender);
 
         MockWTGXX(d.wtgxx).mint(borrower, COLLATERAL);
     }
@@ -70,9 +72,14 @@ contract RepoScenarioTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev 시장이 공표한 만기. 차입자는 이것을 읽어 그대로 넘깁니다. 백서 3.1절.
+    function _marketMaturity() internal view returns (uint256) {
+        return MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault);
+    }
+
     function _open() internal returns (uint256 maturity) {
         _prepareBorrower();
-        maturity = block.timestamp + TERM;
+        maturity = _marketMaturity();
 
         vm.prank(borrower);
         opener.open(vault, COLLATERAL, PRINCIPAL, maturity, lender);
@@ -87,6 +94,61 @@ contract RepoScenarioTest is Test {
         assertEq(IEVault(vault).balanceOf(borrower), COLLATERAL);
         assertEq(IEVault(d.debtVault).debtOf(borrower), PRINCIPAL);
         assertEq(MaturityRegistry(d.maturityRegistry).maturityOf(borrower), maturity);
+        assertEq(maturity, block.timestamp + TERM, unicode"시장 만기가 기대와 다릅니다");
+    }
+
+    // --- 만기는 시장의 속성이다. 백서 3.1절 ---
+
+    /// 차입자가 자기 만기를 고를 수 없습니다. 하루라도 다르면 거부합니다.
+    function test_open_rejectsMaturityOtherThanMarket() public {
+        _prepareBorrower();
+        uint256 market = _marketMaturity();
+        uint256 mine = market + 1 days;
+
+        vm.prank(borrower);
+        vm.expectRevert(
+            abi.encodeWithSelector(RepoOpener.E_MaturityNotMarketMaturity.selector, mine, market)
+        );
+        opener.open(vault, COLLATERAL, PRINCIPAL, mine, lender);
+    }
+
+    /// 더 짧게 빌리는 것도 안 됩니다. 시장이 한 만기로 묶여 있어야 상계가 성립합니다.
+    function test_open_rejectsShorterMaturity() public {
+        _prepareBorrower();
+        uint256 market = _marketMaturity();
+        uint256 mine = market - 1 days;
+
+        vm.prank(borrower);
+        vm.expectRevert(
+            abi.encodeWithSelector(RepoOpener.E_MaturityNotMarketMaturity.selector, mine, market)
+        );
+        opener.open(vault, COLLATERAL, PRINCIPAL, mine, lender);
+    }
+
+    /// 시장 만기가 지나면 새 개시가 멈춥니다. 거버넌스가 다음 기간으로 굴려야 다시 열립니다.
+    function test_open_rejectsAfterMarketMatured() public {
+        _prepareBorrower();
+        uint256 market = _marketMaturity();
+        skip(TERM);
+
+        vm.prank(borrower);
+        vm.expectRevert(abi.encodeWithSelector(RepoOpener.E_MaturityNotInFuture.selector, market));
+        opener.open(vault, COLLATERAL, PRINCIPAL, market, lender);
+    }
+
+    /// 만기를 다음 기간으로 굴리면 개시가 다시 열립니다.
+    function test_open_worksAfterMarketRolled() public {
+        _prepareBorrower();
+        skip(TERM);
+
+        uint256 next = block.timestamp + TERM;
+        MaturityRegistry(d.maturityRegistry).setMarketMaturity(d.debtVault, next);
+
+        vm.prank(borrower);
+        opener.open(vault, COLLATERAL, PRINCIPAL, next, lender);
+
+        assertEq(MaturityRegistry(d.maturityRegistry).maturityOf(borrower), next);
+        assertEq(IEVault(d.debtVault).debtOf(borrower), PRINCIPAL);
     }
 
     /// operator 등록 없이는 열 수 없습니다.
@@ -199,7 +261,7 @@ contract RepoScenarioTest is Test {
         vm.startPrank(borrower);
         MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
         IEVault(d.debtVault).repay(type(uint256).max, borrower);
-        evc.disableController(d.debtVault);
+        IEVault(d.debtVault).disableController();
 
         // 잠겼던 것과 같은 호출이 이제 통과합니다.
         IEVault(vault).withdraw(COLLATERAL, borrower, borrower);
@@ -225,7 +287,7 @@ contract RepoScenarioTest is Test {
         vm.startPrank(borrower);
         MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
         IEVault(d.debtVault).repay(type(uint256).max, borrower);
-        evc.disableController(d.debtVault);
+        IEVault(d.debtVault).disableController();
         IEVault(vault).withdraw(COLLATERAL, borrower, borrower);
         vm.stopPrank();
 
@@ -265,14 +327,14 @@ contract RepoScenarioTest is Test {
         IEVault(vault).withdraw(COLLATERAL, borrower, borrower);
     }
 
-    // --- M7. 만기 후 이자 누적 ---
+    // --- M7. 만기 후 이자 누적. 발동하지 않은 경우 ---
 
-    /// 백서 4.4절은 만기에 부채가 멈춰야 한다고 합니다. EVK는 계속 누적합니다.
-    /// 초과분을 숫자로 기록해 프로덕션에서 4.4절을 그대로 갈지 정하는 근거로 씁니다.
+    /// EVK 기본 동작으로는 만기 후에도 이자가 붙습니다. 멈추는 것은 자동이 아닙니다.
     ///
-    /// @dev EVK 부채는 IRM으로 초당 복리 누적되며 만기 개념이 없습니다. 부채가 계속 자라면
-    ///      담보 부족 경로가 연체 경로보다 먼저 발동해 두 청산 사유가 경합합니다. 백서가
-    ///      부채를 만기에 고정한 이유입니다.
+    /// @dev 백서 4.4절은 만기에 부채가 멈춰야 한다고 합니다. Wave 1의 MaturityController 가
+    ///      그 일을 하지만, 누군가 발동을 불러야 합니다. 이 테스트는 **아무도 부르지 않은**
+    ///      경우를 그대로 남깁니다 — 초과분이 발동의 동기이고, 그 크기가 숫자로 남습니다.
+    ///      발동한 경우는 MaturityController.t.sol 의 test_debtStopsAtMaturity 가 봅니다.
     function test_debtKeepsAccruingPastMaturity() public {
         _open();
 
@@ -307,7 +369,7 @@ contract RepoScenarioTest is Test {
         vm.startPrank(borrower);
         MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
         IEVault(d.debtVault).repay(type(uint256).max, borrower);
-        evc.disableController(d.debtVault);
+        IEVault(d.debtVault).disableController();
         IEVault(vault).withdraw(COLLATERAL, borrower, borrower);
         vm.stopPrank();
 

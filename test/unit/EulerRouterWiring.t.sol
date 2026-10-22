@@ -44,7 +44,7 @@ contract EulerRouterWiringTest is EVaultTestBase {
         usdc = new TestERC20("Mock USDC", "USDC", 6, false);
 
         router = new EulerRouter(address(evc), governor);
-        adapter = new FixedOneToOneOracle(address(wtgxx), 18, address(usdc), 6);
+        adapter = new FixedOneToOneOracle(address(wtgxx), address(usdc));
 
         address radiusImpl = address(new WTGXXCollateralVault(integrations, modules));
         vm.prank(admin);
@@ -116,7 +116,7 @@ contract EulerRouterWiringTest is EVaultTestBase {
 
         // 프로덕션에서 Dataspan shadowNav 어댑터로 교체하는 상황을 흉내냅니다.
         // 여기서는 같은 성격의 새 어댑터를 배포해 갈아 끼웁니다.
-        FixedOneToOneOracle newAdapter = new FixedOneToOneOracle(address(wtgxx), 18, address(usdc), 6);
+        FixedOneToOneOracle newAdapter = new FixedOneToOneOracle(address(wtgxx), address(usdc));
 
         vm.prank(governor);
         router.govSetConfig(address(wtgxx), address(usdc), address(newAdapter));
@@ -131,7 +131,7 @@ contract EulerRouterWiringTest is EVaultTestBase {
 
     /// 어댑터 교체 권한은 거버넌스에 있습니다. 감시 항목입니다.
     function test_onlyGovernorCanSwapAdapter() public {
-        FixedOneToOneOracle other = new FixedOneToOneOracle(address(wtgxx), 18, address(usdc), 6);
+        FixedOneToOneOracle other = new FixedOneToOneOracle(address(wtgxx), address(usdc));
 
         vm.prank(borrower);
         vm.expectRevert();

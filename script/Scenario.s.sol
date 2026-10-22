@@ -11,6 +11,7 @@ import {DeployStack} from "./DeployStack.s.sol";
 import {RepoOpener} from "../src/repo/RepoOpener.sol";
 import {LiquidationPrecheck} from "../src/repo/LiquidationPrecheck.sol";
 import {MaturityRegistry} from "../src/registry/MaturityRegistry.sol";
+import {MaturityController} from "../src/repo/MaturityController.sol";
 import {WTGXXGate} from "../src/gate/WTGXXGate.sol";
 import {MockWTGXX} from "../src/mocks/MockWTGXX.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
@@ -68,7 +69,6 @@ contract Scenario is Script {
 
     uint256 internal constant COLLATERAL = 100e18;
     uint256 internal constant PRINCIPAL = 80e6;
-    uint256 internal constant TERM = 7 days;
 
     string internal constant STATE_FILE = "./broadcast/scenario-state.json";
 
@@ -119,6 +119,14 @@ contract Scenario is Script {
         console.log("gate.canEnter(borrower)", WTGXXGate(d.gate).canEnter(borrower));
         console.log("gate.canEnter(lender)  ", WTGXXGate(d.gate).canEnter(lender));
         console.log("");
+        console.log("maturity controller    ", d.maturityController);
+        console.log("vault governor         ", IEVault(d.debtVault).governorAdmin());
+        console.log("market maturity        ", MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault));
+        console.log("now                    ", block.timestamp);
+        console.log("borrow LTV             ", IEVault(d.debtVault).LTVBorrow(vault));
+        console.log("liquidation LTV        ", IEVault(d.debtVault).LTVLiquidation(vault));
+        console.log("max liq discount       ", IEVault(d.debtVault).maxLiquidationDiscount());
+        console.log("");
         console.log("vault address was predictable:", vault == opener.debtVault() ? false : true);
     }
 
@@ -135,7 +143,11 @@ contract Scenario is Script {
 
         // 차입자가 operator 를 등록하고 대출을 엽니다. 차입자 본인 트랜잭션입니다.
         // 테스트에서는 vm.prank 로 넘어갔던 부분이며, 실제로는 두 트랜잭션입니다.
-        uint256 maturity = block.timestamp + TERM;
+        //
+        // 만기는 시장에서 읽습니다. 백서 3.1절. 전까지 여기서 block.timestamp + 7 days 로
+        // 계산했는데, step1 과 step2 가 다른 블록이라 차입자마다 만기가 달라졌습니다.
+        uint256 maturity = MaturityRegistry(s.maturityRegistry).marketMaturity(s.debtVault);
+        require(maturity != 0, "market not open");
 
         vm.startBroadcast(_pk("BORROWER_PK", PK_BORROWER));
         MockWTGXX(s.wtgxx).approve(s.vault, type(uint256).max);
@@ -212,14 +224,29 @@ contract Scenario is Script {
         console.log("precheck before        ", canSettle);
         require(canSettle, "precheck failed before liquidation");
 
-        // 만기 경과를 EVK 언어로 번역합니다. 거버넌스 트랜잭션입니다.
-        vm.startBroadcast(_pk("PRIVATE_KEY", PK_DEPLOYER));
-        IEVault(s.debtVault).setLTV(s.vault, 0.7e4, 0.7e4, 0);
+        // 만기 경과를 청산 가능 상태로 바꿉니다. **거버넌스 트랜잭션이 아닙니다** —
+        // 권한 검사가 없어 아무 계정이나 보낼 수 있습니다. 여기서는 제3자로 보내
+        // 그 점을 보입니다.
+        MaturityController controller = MaturityController(s.maturityController);
+        console.log("can trigger (lender)    ", controller.canTrigger(s.vault, s.borrower, s.lender));
+        console.log("notice window ends at   ", controller.noticeWindowEndsAt());
+
+        // 통지 창 안에서는 그 계약의 상대방만 선언할 수 있습니다. 대여자 본인 트랜잭션입니다.
+        vm.startBroadcast(_pk("LENDER_PK", PK_LENDER));
+        if (controller.rampStartedAt(s.vault) == 0) controller.triggerMaturity(s.vault, s.borrower);
         vm.stopBroadcast();
 
+        console.log("market closed           ", controller.marketClosed());
+        console.log("irm after trigger       ", IEVault(s.debtVault).interestRateModel());
+        console.log("borrow LTV after        ", IEVault(s.debtVault).LTVBorrow(s.vault));
+        console.log("liq LTV after (ramping) ", IEVault(s.debtVault).LTVLiquidation(s.vault));
+        console.log("ramp ends at            ", controller.rampEndsAt(s.vault));
+
+        // 사다리가 차입자의 비율까지 내려와야 청산이 열립니다. anvil 에서는
+        // evm_increaseTime 으로 넘기고, Sepolia 에서는 실제로 기다려야 합니다.
         (uint256 maxRepay,) = IEVault(s.debtVault).checkLiquidation(s.lender, s.borrower, s.vault);
-        console.log("max repay after setLTV ", maxRepay);
-        require(maxRepay > 0, "liquidation still not possible");
+        console.log("max repay now           ", maxRepay);
+        require(maxRepay > 0, "ramp has not opened liquidation yet - advance time and re-run");
 
         // 청산과 상환을 배치로 묶습니다. 대여자 본인 트랜잭션입니다.
         vm.startBroadcast(_pk("LENDER_PK", PK_LENDER));
@@ -266,6 +293,7 @@ contract Scenario is Script {
         address debtVault;
         address repoOpener;
         address maturityRegistry;
+        address maturityController;
         address gate;
         address precheck;
         address wtgxx;
@@ -288,6 +316,7 @@ contract Scenario is Script {
         vm.serializeAddress(json, "debtVault", d.debtVault);
         vm.serializeAddress(json, "repoOpener", d.repoOpener);
         vm.serializeAddress(json, "maturityRegistry", d.maturityRegistry);
+        vm.serializeAddress(json, "maturityController", d.maturityController);
         vm.serializeAddress(json, "gate", d.gate);
         vm.serializeAddress(json, "precheck", precheck);
         vm.serializeAddress(json, "wtgxx", d.wtgxx);
@@ -305,6 +334,7 @@ contract Scenario is Script {
         s.debtVault = vm.parseJsonAddress(json, ".debtVault");
         s.repoOpener = vm.parseJsonAddress(json, ".repoOpener");
         s.maturityRegistry = vm.parseJsonAddress(json, ".maturityRegistry");
+        s.maturityController = vm.parseJsonAddress(json, ".maturityController");
         s.gate = vm.parseJsonAddress(json, ".gate");
         s.precheck = vm.parseJsonAddress(json, ".precheck");
         s.wtgxx = vm.parseJsonAddress(json, ".wtgxx");

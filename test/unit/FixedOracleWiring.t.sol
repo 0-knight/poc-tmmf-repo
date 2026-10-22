@@ -38,7 +38,7 @@ contract FixedOracleWiringTest is EVaultTestBase {
         wtgxx = new TestERC20("Mock WTGXX", "WTGXX", 18, false);
         usdc = new TestERC20("Mock USDC", "USDC", 6, false);
 
-        fixedOracle = new FixedOneToOneOracle(address(wtgxx), 18, address(usdc), 6);
+        fixedOracle = new FixedOneToOneOracle(address(wtgxx), address(usdc));
 
         // 담보 볼트는 Radius 구현으로 배포합니다.
         address radiusImpl = address(new WTGXXCollateralVault(integrations, modules));
@@ -134,7 +134,7 @@ contract FixedOracleWiringTest is EVaultTestBase {
 
         usdc.approve(address(debtVault), type(uint256).max);
         debtVault.repay(type(uint256).max, borrower);
-        evc.disableController(address(debtVault));
+        debtVault.disableController();
 
         collateralVault.withdraw(100e18, borrower, borrower);
         vm.stopPrank();

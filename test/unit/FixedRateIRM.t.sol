@@ -45,8 +45,12 @@ contract FixedRateIRMTest is EVaultTestBase {
         vm.expectRevert(IIRM.E_IRMUpdateUnauthorized.selector);
         irm.computeInterestRate(address(0xBEEF), 0, 0);
 
+        // 기대값을 **미리** 읽습니다. `vm.prank` 는 한 번만 쓰이고, 인자 평가 순서는
+        // 언어가 보장하지 않습니다. `irm.ratePerSecond()` 가 먼저 평가되면 그 한 번을
+        // 써 버려 아래 호출이 테스트 컨트랙트 권한으로 들어갑니다.
+        uint256 expected = irm.ratePerSecond();
         vm.prank(address(0xBEEF));
-        assertEq(irm.computeInterestRate(address(0xBEEF), 0, 0), irm.ratePerSecond());
+        assertEq(irm.computeInterestRate(address(0xBEEF), 0, 0), expected);
     }
 
     function test_governorCanChangeRate() public {

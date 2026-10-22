@@ -34,7 +34,7 @@ contract DeployLocal is Script {
         MockWTGXX wtgxx = new MockWTGXX(deployer, address(oracle), address(0xDEAD));
         MockUSDC usdc = new MockUSDC();
 
-        FixedOneToOneOracle priceOracle = new FixedOneToOneOracle(address(wtgxx), 18, address(usdc), 6);
+        FixedOneToOneOracle priceOracle = new FixedOneToOneOracle(address(wtgxx), address(usdc));
         MaturityRegistry registry = new MaturityRegistry(deployer);
         WTGXXGate gate = new WTGXXGate(address(wtgxx));
 

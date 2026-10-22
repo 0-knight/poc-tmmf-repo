@@ -11,6 +11,8 @@ import {CollateralVaultFactory} from "../../src/vault/CollateralVaultFactory.sol
 import {FixedRateIRM} from "../../src/irm/FixedRateIRM.sol";
 import {WTGXXGate} from "../../src/gate/WTGXXGate.sol";
 import {MaturityRegistry} from "../../src/registry/MaturityRegistry.sol";
+import {MATURITY_CLOSED_OPS} from "../../src/repo/MaturityController.sol";
+import {RepoOpener} from "../../src/repo/RepoOpener.sol";
 import {MockWTGXX} from "../../src/mocks/MockWTGXX.sol";
 import {MockUSDC} from "../../src/mocks/MockUSDC.sol";
 import {MockKycNFT} from "../../src/mocks/MockKycNFT.sol";
@@ -47,6 +49,10 @@ contract DeployStackTest is Test {
     function test_debtVaultConfigured() public view {
         IEVault debtVault = IEVault(d.debtVault);
 
+        (address hookTarget, uint32 hookedOps) = debtVault.hookConfig();
+        assertEq(hookTarget, d.debtVaultHook, unicode"부채 볼트에 자격 훅이 붙지 않았습니다");
+        assertEq(hookedOps, MATURITY_CLOSED_OPS);
+
         assertEq(debtVault.asset(), d.usdc);
         assertEq(debtVault.oracle(), d.router);
         assertEq(debtVault.unitOfAccount(), d.usdc);
@@ -60,7 +66,23 @@ contract DeployStackTest is Test {
         assertEq(v.asset(), d.wtgxx);
         assertEq(v.oracle(), d.router, unicode"오라클 자리에 라우터가 아닌 것이 들어갔습니다");
         assertEq(v.unitOfAccount(), d.usdc);
-        assertEq(IEVault(d.debtVault).LTVBorrow(vault), 0.9e4);
+
+        // 두 LTV가 벌어져 있어야 합니다. 같으면 한도까지 빌린 계정이 곧바로 청산 대상입니다.
+        assertEq(IEVault(d.debtVault).LTVBorrow(vault), 0.92e4, unicode"개시 한도가 92%가 아닙니다");
+        assertEq(IEVault(d.debtVault).LTVLiquidation(vault), 0.95e4, unicode"청산선이 95%가 아닙니다");
+        assertLt(
+            IEVault(d.debtVault).LTVBorrow(vault),
+            IEVault(d.debtVault).LTVLiquidation(vault),
+            unicode"두 LTV가 한 점에 붙어 있습니다"
+        );
+    }
+
+    /// 청산 파라미터를 배포 스크립트가 못 박아야 합니다. EVK 기본값에 기대지 않습니다.
+    function test_liquidationParamsConfigured() public view {
+        IEVault debtVault = IEVault(d.debtVault);
+
+        assertEq(debtVault.maxLiquidationDiscount(), 0.02e4, unicode"청산 할인 한도가 2%가 아닙니다");
+        assertEq(debtVault.liquidationCoolOffTime(), 0, unicode"청산 쿨오프가 0이 아닙니다");
     }
 
     /// 주소를 배포 전에 알 수 있어야 합니다. 백서 2.2절.
@@ -84,6 +106,29 @@ contract DeployStackTest is Test {
     function test_gateAllowsAfterKycNft() public {
         MockKycNFT(d.kycNft).safeMint(borrower);
         assertTrue(WTGXXGate(d.gate).canEnter(borrower));
+    }
+
+    /// 배포 시점에 시장의 만기가 공표돼 있어야 합니다. 백서 3.1절.
+    function test_marketMaturityPublished() public view {
+        MaturityRegistry reg = MaturityRegistry(d.maturityRegistry);
+
+        assertEq(reg.marketMaturity(d.debtVault), block.timestamp + 7 days);
+        assertFalse(reg.isMarketMatured(d.debtVault));
+    }
+
+    function test_marketMaturesAfterTerm() public {
+        MaturityRegistry reg = MaturityRegistry(d.maturityRegistry);
+
+        skip(7 days);
+        assertTrue(reg.isMarketMatured(d.debtVault), unicode"만기가 지났는데 시장이 살아 있습니다");
+    }
+
+    /// 열지 않은 시장은 만기가 0입니다. 미개설과 만기 경과를 구분해야 합니다.
+    function test_unopenedMarketHasNoMaturity() public view {
+        MaturityRegistry reg = MaturityRegistry(d.maturityRegistry);
+
+        assertEq(reg.marketMaturity(vault), 0);
+        assertFalse(reg.isMarketMatured(vault));
     }
 
     function test_maturityRegistryUsable() public {
@@ -123,16 +168,22 @@ contract DeployStackTest is Test {
     // --- 전체 흐름 ---
 
     /// 개시부터 상환까지 배포된 구성 그대로 돌아야 합니다.
+    ///
+    /// @dev Wave 2까지 이 테스트는 `borrow` 를 직접 불렀습니다. 그 경로가 막혔습니다 —
+    ///      만기 기록이 없는 차입은 거부됩니다. 이제 `RepoOpener` 를 거치며, 그것이
+    ///      실제 운영 경로입니다.
     function test_openAndRepay() public {
         _fundLender(1_000e6);
-        _fundAndDeposit(100e18);
+        _fundAndDeposit(0); // 화이트리스트와 토큰만. 예치는 opener 가 합니다.
 
         EthereumVaultConnector evc = EthereumVaultConnector(payable(d.evc));
 
         vm.startPrank(borrower);
-        evc.enableCollateral(borrower, vault);
-        evc.enableController(borrower, d.debtVault);
-        IEVault(d.debtVault).borrow(80e6, borrower);
+        MockWTGXX(d.wtgxx).approve(vault, type(uint256).max);
+        evc.setAccountOperator(borrower, d.repoOpener, true);
+        RepoOpener(d.repoOpener).open(
+            vault, 100e18, 80e6, MaturityRegistry(d.maturityRegistry).marketMaturity(d.debtVault), lender
+        );
         vm.stopPrank();
 
         assertEq(MockUSDC(d.usdc).balanceOf(borrower), 80e6);
@@ -153,7 +204,7 @@ contract DeployStackTest is Test {
         vm.startPrank(borrower);
         MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
         IEVault(d.debtVault).repay(type(uint256).max, borrower);
-        evc.disableController(d.debtVault);
+        IEVault(d.debtVault).disableController();
 
         // 같은 호출이 이제 통과합니다.
         IEVault(vault).withdraw(100e18, borrower, borrower);
@@ -173,6 +224,9 @@ contract DeployStackTest is Test {
     // --- 헬퍼 ---
 
     function _fundLender(uint256 amount) internal {
+        // Wave 2부터 부채 볼트의 입금에 자격 검사가 붙습니다. 대여자는 청산 시 담보를
+        // 직접 받으므로(백서 3.5절) 그 자리에 자격 없는 주소가 앉을 수 없습니다.
+        MockKycNFT(d.kycNft).safeMint(lender);
         MockUSDC(d.usdc).mint(lender, amount);
         vm.startPrank(lender);
         MockUSDC(d.usdc).approve(d.debtVault, type(uint256).max);
@@ -180,11 +234,14 @@ contract DeployStackTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev amount 가 0이면 화이트리스트와 토큰만 준비하고 예치는 하지 않습니다.
     function _fundAndDeposit(uint256 amount) internal {
         // 볼트가 WTGXX를 받으려면 화이트리스트여야 합니다.
         MockKycNFT(d.kycNft).safeMint(vault);
         MockKycNFT(d.kycNft).safeMint(borrower);
-        MockWTGXX(d.wtgxx).mint(borrower, amount);
+        MockWTGXX(d.wtgxx).mint(borrower, amount == 0 ? 100e18 : amount);
+
+        if (amount == 0) return;
 
         vm.startPrank(borrower);
         MockWTGXX(d.wtgxx).approve(vault, type(uint256).max);

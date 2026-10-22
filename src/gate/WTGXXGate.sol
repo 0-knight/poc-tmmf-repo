@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {IWTGXX} from "../interfaces/IWTGXX.sol";
+import {IComplianceGate} from "../interfaces/IComplianceGate.sol";
 
 /// @title WTGXXGate
 /// @notice 백서 6장의 게이트. 진입만 막고 출구는 통과시킵니다.
@@ -18,7 +19,7 @@ import {IWTGXX} from "../interfaces/IWTGXX.sol";
 ///      모든 외부 호출을 staticcall로 처리합니다. 고수준 호출은 코드 없는 주소에 대해
 ///      extcodesize 검사에서 revert하며 try/catch로 잡히지 않습니다. 게이트가 revert하면
 ///      호출한 트랜잭션 전체가 죽으므로 판정 결과로만 답해야 합니다.
-contract WTGXXGate {
+contract WTGXXGate is IComplianceGate {
     error ZeroAddress();
 
     /// @notice canEnter가 false를 반환한 이유. 진단과 UI 표시용입니다.
