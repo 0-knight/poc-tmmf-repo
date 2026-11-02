@@ -1,0 +1,21 @@
+[package]
+name = "repo-market"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+common = { path = "../common" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+gate = { path = "../gate" }
+participant-registry = { path = "../participant-registry" }
+maturity-registry = { path = "../maturity-registry" }
+collateral-vault = { path = "../collateral-vault" }
+fixed-oracle = { path = "../fixed-oracle" }
